@@ -1,0 +1,20 @@
+{
+  "name": "iptscanner",
+  "version": "1.0.0",
+  "description": "IPTorrents scanner for Dolby Vision content",
+  "main": "monitor-iptorrents.js",
+  "scripts": {
+    "start": "node monitor-iptorrents.js",
+    "test": "node monitor-iptorrents.js --one-time",
+    "reset": "node monitor-iptorrents.js --reset"
+  },
+  "dependencies": {
+    "axios": "^1.6.2",
+    "node-cron": "^3.0.3",
+    "puppeteer": "^21.11.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "private": true
+}

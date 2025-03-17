@@ -1,0 +1,9 @@
+flask==2.3.3
+flask-compress==1.14
+plexapi==4.15.4
+aiohttp>=3.9.0
+lxml==4.9.3
+requests==2.31.0
+python-dateutil==2.8.2
+werkzeug==2.3.7
+apscheduler==3.10.4

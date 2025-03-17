@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Node.js
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Environment variables and sensitive data
+.env
+.env.*
+!.env.example
+settings.json
+*/settings.json
+iptscanner/config.json
+iptscanner/cookies.json
+*cookies.json
+
+# Data files
+exports/
+data/
+iptscanner/data/
+iptscanner/browser-profile/
+known_torrents.json
+movie_database.db
+*.db
+*.log
+
+# Docker
+*.pem
+docker-compose.override.yml
+
+# IDE and editor files
+.idea/
+.vscode/
+*.sublime-*
+.DS_Store
+Thumbs.db
+*.sw[po]
+*~ 
