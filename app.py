@@ -61,6 +61,147 @@ EXPORTS_DIR = os.path.join(DATA_DIR, "exports")
 os.makedirs(EXPORTS_DIR, exist_ok=True)
 log.info(f"Exports directory: {EXPORTS_DIR}")
 
+# Setup IPTScanner cookies from environment variables if available
+def setup_ipt_cookies():
+    try:
+        log.info("Setting up IPTScanner cookies from environment variables if available")
+        ipt_uid = os.environ.get('IPT_UID')
+        ipt_pass = os.environ.get('IPT_PASS')
+        
+        if ipt_uid and ipt_pass:
+            log.info("IPT_UID and IPT_PASS environment variables found, setting up cookies")
+            
+            # Get the path to the cookies file
+            if os.path.exists('/app/iptscanner'):
+                # Running in Docker
+                iptscanner_dir = '/app/iptscanner'
+            else:
+                # Running locally
+                iptscanner_dir = os.path.join(DATA_DIR, 'iptscanner')
+                
+            os.makedirs(iptscanner_dir, exist_ok=True)
+            cookies_path = os.path.join(iptscanner_dir, 'cookies.json')
+            
+            # Create cookies file if it doesn't exist
+            if not os.path.exists(cookies_path):
+                log.info(f"Creating cookies file at {cookies_path}")
+                cookies = [
+                    {
+                        "name": "uid",
+                        "value": ipt_uid,
+                        "domain": ".iptorrents.com",
+                        "path": "/",
+                        "expires": int(datetime.now().timestamp() + 86400 * 30)
+                    },
+                    {
+                        "name": "pass",
+                        "value": ipt_pass,
+                        "domain": ".iptorrents.com",
+                        "path": "/",
+                        "expires": int(datetime.now().timestamp() + 86400 * 30)
+                    }
+                ]
+                
+                with open(cookies_path, 'w') as f:
+                    json.dump(cookies, f, indent=4)
+                log.info("Created IPTScanner cookies file successfully")
+                
+            # Update the config.json file as well
+            config_path = os.path.join(iptscanner_dir, 'config.json')
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        config = json.load(f)
+                    
+                    # Update config with credentials
+                    config['uid'] = ipt_uid
+                    config['pass'] = ipt_pass
+                    config['loginComplete'] = True
+                    config['cookiesPath'] = cookies_path
+                    
+                    with open(config_path, 'w') as f:
+                        json.dump(config, f, indent=4)
+                    log.info("Updated IPTScanner config with credentials")
+                except Exception as e:
+                    log.error(f"Error updating IPTScanner config: {e}")
+            else:
+                log.info(f"IPTScanner config file {config_path} not found")
+        else:
+            log.info("IPT_UID or IPT_PASS environment variables not set, skipping cookie setup")
+    except Exception as e:
+        log.error(f"Error setting up IPTScanner cookies: {e}")
+
+# Call the function to setup IPTScanner cookies
+setup_ipt_cookies()
+
+# Ensure IPTScanner data structure is properly set up
+def setup_iptscanner_dirs():
+    try:
+        log.info("Setting up IPTScanner directory structure")
+        
+        # In Docker, the iptscanner directory should be under /app and data under /data
+        if os.path.exists('/app/iptscanner'):
+            # Running in Docker
+            log.info("Running in Docker environment")
+            iptscanner_dir = '/app/iptscanner'
+            data_dir = '/data/iptscanner/data'
+            profile_dir = '/data/iptscanner/profile'
+        else:
+            # Running locally
+            log.info("Running in local environment")
+            iptscanner_dir = os.path.join(DATA_DIR, 'iptscanner')
+            data_dir = os.path.join(iptscanner_dir, 'data')
+            profile_dir = os.path.join(iptscanner_dir, 'browser-profile')
+        
+        # Create directories
+        os.makedirs(iptscanner_dir, exist_ok=True)
+        os.makedirs(data_dir, exist_ok=True)
+        os.makedirs(profile_dir, exist_ok=True)
+        
+        # Create default config if it doesn't exist
+        config_path = os.path.join(iptscanner_dir, 'config.json')
+        if not os.path.exists(config_path):
+            default_config = {
+                "iptorrents": {
+                    "url": "https://iptorrents.com/login",
+                    "searchUrl": "https://iptorrents.com/t?q=BL%2BEL%2BRPU&qf=adv#torrents",
+                    "searchTerm": "BL+EL+RPU",
+                    "cookiePath": ""
+                },
+                "telegram": {
+                    "enabled": False,
+                    "botToken": "",
+                    "chatId": ""
+                },
+                "checkInterval": "0 */2 * * *",
+                "dataPath": os.path.join(data_dir, "known_torrents.json"),
+                "configPath": config_path,
+                "cookiesPath": os.path.join(iptscanner_dir, "cookies.json"),
+                "headless": True,
+                "debug": False,
+                "loginComplete": False,
+                "userDataDir": profile_dir,
+                "lastUpdateTime": None
+            }
+            
+            with open(config_path, 'w') as f:
+                json.dump(default_config, f, indent=4)
+            log.info(f"Created default IPTScanner config at {config_path}")
+            
+        # Create empty known_torrents.json if it doesn't exist
+        known_torrents_path = os.path.join(data_dir, "known_torrents.json")
+        if not os.path.exists(known_torrents_path):
+            with open(known_torrents_path, 'w') as f:
+                json.dump([], f)
+            log.info(f"Created empty known_torrents.json at {known_torrents_path}")
+            
+        log.info("IPTScanner directory structure setup complete")
+    except Exception as e:
+        log.error(f"Error setting up IPTScanner directory structure: {e}")
+
+# Call the function to set up IPTScanner directory structure
+setup_iptscanner_dirs()
+
 # Update file paths to use DATA_DIR
 app.config.update(
     # Original paths updated to use DATA_DIR
