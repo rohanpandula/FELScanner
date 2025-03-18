@@ -7,3 +7,4 @@ requests==2.31.0
 python-dateutil==2.8.2
 werkzeug==2.3.7
 apscheduler==3.10.4
+psutil==5.9.6
