@@ -2062,3 +2062,7 @@ def test_radarr_in_config():
     except Exception as e:
         app.logger.error(f"Radarr test connection error: {e}")
         return jsonify({'success': False, 'error': str(e)})
+
+# Start the Flask application when run directly
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=5000, debug=True)
