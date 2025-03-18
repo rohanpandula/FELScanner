@@ -2067,7 +2067,29 @@ def test_radarr_in_config():
 if __name__ == "__main__":
     print("Starting Flask application...")
     try:
-        app.run(host='0.0.0.0', port=5000, debug=True)
+        # Parse command line arguments if any
+        import sys
+        host = '0.0.0.0'  # Default host
+        port = 5000      # Default port
+        debug = True     # Default debug setting
+        
+        # Check for arguments in the form of --host=X, --port=Y, etc.
+        for arg in sys.argv[1:]:
+            if arg.startswith('--host='):
+                host = arg.split('=')[1]
+                print(f"Using host: {host}")
+            elif arg.startswith('--port='):
+                port = int(arg.split('=')[1])
+                print(f"Using port: {port}")
+            elif arg == '--debug' or arg == '--debug=True':
+                debug = True
+                print("Debug mode enabled")
+            elif arg == '--no-debug' or arg == '--debug=False':
+                debug = False
+                print("Debug mode disabled")
+        
+        print(f"Starting Flask app on {host}:{port} (debug={debug})")
+        app.run(host=host, port=port, debug=debug)
     except Exception as e:
         print(f"Error starting Flask application: {str(e)}")
         import traceback
