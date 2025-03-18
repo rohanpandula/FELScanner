@@ -114,6 +114,8 @@ ENV PYTHONUNBUFFERED=1
 ENV FLASK_APP=app.py
 ENV DATA_DIR=/data
 ENV NODE_ENV=production
+ENV FLASK_DEBUG=1
+ENV PYTHONIOENCODING=utf-8
 
 # Expose port
 EXPOSE 5000
@@ -126,4 +128,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:5000/ || exit 1
 
 # Start the application with host network binding
-CMD ["python", "-u", "app.py", "--host=0.0.0.0", "--port=5000"] 
+CMD ["bash", "-c", "echo 'Starting Flask app in container...' && python -u app.py --host=0.0.0.0 --port=5000 --debug > /data/flask.log 2>&1"] 
