@@ -76,23 +76,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Clone the repository from the radar branch
-RUN apt-get update && apt-get install -y git && \
-    git clone -b radar https://github.com/rohanpandula/FELScanner.git /tmp/felscanner && \
-    cp -r /tmp/felscanner/* /app/ && \
-    rm -rf /tmp/felscanner && \
-    apt-get remove -y git && \
-    apt-get autoremove -y && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# Copy application files (these will be overwritten by the cloned repository)
-# COPY app.py scanner.py ./
-# COPY static/ ./static/
-# COPY templates/ ./templates/
-
-# Copy IPTScanner files (these will be overwritten by the cloned repository)
-# COPY iptscanner/ ./iptscanner/
+# Copy application files directly from local filesystem
+COPY app.py scanner.py radarr.py ./
+COPY static/ ./static/
+COPY templates/ ./templates/
+COPY iptscanner/ ./iptscanner/
 
 # Install Node.js dependencies for IPTScanner
 WORKDIR /app/iptscanner
