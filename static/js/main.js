@@ -93,29 +93,71 @@ document.getElementById('iptscanner-refresh').addEventListener('click', function
 // Test IPT login button
 document.getElementById('test-ipt-login').addEventListener('click', async function() {
     const uid = document.getElementById('settings-ipt-uid').value;
-    const pass = document.getElementById('settings-ipt-pass').value;
+    const passkey = document.getElementById('settings-ipt-pass').value;
     
-    if (!uid || !pass) {
+    if (!uid || !passkey) {
         showToast('Please enter both UID and Pass cookie values', 'warning');
         return;
     }
     
+    // Show loading state
+    this.disabled = true;
+    this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Testing...';
+    
     try {
-        const response = await fetch('/api/iptscanner/testlogin', {
+        const response = await fetch('/api/iptscanner/test-login', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ uid, pass })
+            body: JSON.stringify({ uid, passkey })
         });
+        
         const data = await response.json();
+        
         if (data.success) {
-            showToast('Login successful! Cookies are valid.', 'success');
+            showToast('Login successful! Cookies have been saved.', 'success');
         } else {
-            showToast('Login failed: ' + (data.message || 'Unknown error'), 'error');
+            showToast('Login failed: ' + (data.error || data.message || 'Unknown error'), 'error');
         }
     } catch (error) {
+        console.error('Error testing login:', error);
         showToast('Error testing login: ' + error.message, 'error');
+    } finally {
+        // Reset button state
+        this.disabled = false;
+        this.innerHTML = 'Test Login';
+    }
+});
+
+// Test Run IPT Scanner button
+document.getElementById('test-run-ipt-scanner').addEventListener('click', async function() {
+    try {
+        // Show loading state
+        this.disabled = true;
+        this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Running...';
+        
+        const response = await fetch('/api/iptscanner/test-run', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showToast('IPT scanner test run completed successfully! Check logs for details.', 'success');
+        } else {
+            showToast('IPT scanner test run failed: ' + (data.error || 'Unknown error'), 'error');
+        }
+    } catch (error) {
+        console.error('Error running IPT scanner test:', error);
+        showToast('Error running IPT scanner: ' + error.message, 'error');
+    } finally {
+        // Reset button state
+        this.disabled = false;
+        this.innerHTML = 'Test Run Scanner';
     }
 });
 
@@ -164,6 +206,9 @@ async function fetchIPTData(forceRefresh = false) {
         // First, load settings
         await loadIPTSettings();
         
+        // Then check cookie status
+        await checkCookieStatus();
+        
         // Then load torrent data
         const response = await fetch(`/api/iptscanner/torrents${forceRefresh ? '?refresh=true' : ''}`);
         const data = await response.json();
@@ -178,6 +223,52 @@ async function fetchIPTData(forceRefresh = false) {
     } catch (error) {
         console.error('Error fetching IPT data:', error);
         logIPTMessage(`Error fetching data: ${error.message}`);
+    }
+}
+
+// Check if cookies are stored and valid
+async function checkCookieStatus() {
+    try {
+        // First check if the cookies.json file exists and is valid
+        const cookieStatusEl = document.getElementById('ipt-cookie-status');
+        const cookieStatusTextEl = document.getElementById('ipt-cookie-status-text');
+        
+        if (!cookieStatusEl || !cookieStatusTextEl) return;
+        
+        // Show status indicator while checking
+        cookieStatusEl.style.display = 'block';
+        cookieStatusEl.className = 'alert alert-info mb-3';
+        cookieStatusTextEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Checking cookie status...';
+        
+        // Check if cookies.json exists by trying to load torrents
+        const response = await fetch('/api/iptscanner/torrents?check_only=true');
+        const data = await response.json();
+        
+        if (!data.error) {
+            // Cookies exist and work
+            cookieStatusEl.className = 'alert alert-success mb-3';
+            cookieStatusTextEl.innerHTML = '<i class="fas fa-check-circle"></i> IPTorrents cookies are stored and working.';
+        } else if (data.error && data.error.includes('No cookies')) {
+            // Cookies don't exist
+            cookieStatusEl.className = 'alert alert-warning mb-3';
+            cookieStatusTextEl.innerHTML = '<i class="fas fa-exclamation-triangle"></i> No IPTorrents cookies found. Please enter your cookies above.';
+        } else {
+            // Cookies exist but may be invalid
+            cookieStatusEl.className = 'alert alert-danger mb-3';
+            cookieStatusTextEl.innerHTML = `<i class="fas fa-times-circle"></i> Cookie error: ${data.error}`;
+        }
+    } catch (error) {
+        console.error('Error checking cookie status:', error);
+        
+        // Show error in the status
+        const cookieStatusEl = document.getElementById('ipt-cookie-status');
+        const cookieStatusTextEl = document.getElementById('ipt-cookie-status-text');
+        
+        if (cookieStatusEl && cookieStatusTextEl) {
+            cookieStatusEl.style.display = 'block';
+            cookieStatusEl.className = 'alert alert-danger mb-3';
+            cookieStatusTextEl.innerHTML = '<i class="fas fa-times-circle"></i> Error checking cookie status.';
+        }
     }
 }
 
@@ -251,7 +342,10 @@ function updateIPTUI(data) {
         
         // Add a darker highlight class for new torrents that fits the dark theme
         if (torrent.isNew) {
-            row.classList.add('table-success', 'bg-opacity-25');
+            // Replace table-success with a darker class that fits the dark theme
+            row.classList.add('bg-dark', 'border-success');
+            // Add a subtle indicator that it's new without changing the background color
+            row.style.borderLeft = '4px solid var(--bs-success)';
         }
         
         // Number column
@@ -463,7 +557,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     
     loadReports();
-    loadSettings();
+    
+    // Load settings first
+    await loadSettings();
+    
+    // AFTER settings are loaded, set up Telegram test button
+    setupSettingsTelegramTest();
     
     if (isPolling) {
         startPolling();
@@ -478,6 +577,94 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Call this function when the page loads
     fetchRoundingPreference();
 });
+
+// Set up the Telegram test button in settings
+function setupSettingsTelegramTest() {
+    console.log('Setting up Telegram test button handler');
+    const testBtn = document.getElementById('settings-test-telegram-btn');
+    if (!testBtn) {
+        console.error('Telegram test button not found in the DOM!');
+        return;
+    }
+    
+    console.log('Found Telegram test button, attaching event listener');
+    
+    // Also make sure Telegram container is visible when enabled
+    const telegramEnabledCheckbox = document.getElementById('settings-telegram-enabled');
+    const telegramContainer = document.getElementById('settings-telegram-container');
+    
+    if (telegramEnabledCheckbox && telegramContainer) {
+        telegramEnabledCheckbox.addEventListener('change', function() {
+            telegramContainer.style.display = this.checked ? 'block' : 'none';
+            console.log('Telegram container visibility updated:', this.checked);
+        });
+    }
+    
+    testBtn.addEventListener('click', async function() {
+        console.log('Telegram test button clicked');
+        const token = document.getElementById('settings-telegram-token').value;
+        const chatId = document.getElementById('settings-telegram-chat-id').value;
+        const successEl = document.getElementById('settings-telegram-success');
+        const errorEl = document.getElementById('settings-telegram-error');
+        
+        // Reset alerts
+        if (successEl) successEl.style.display = 'none';
+        if (errorEl) errorEl.style.display = 'none';
+        
+        if (!token || !chatId) {
+            if (errorEl) {
+                errorEl.textContent = 'Please fill in both Bot Token and Chat ID fields';
+                errorEl.style.display = 'block';
+            }
+            return;
+        }
+        
+        // Show loading state
+        this.disabled = true;
+        const originalText = this.innerHTML;
+        this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Testing...';
+        
+        try {
+            const response = await fetch('/api/test-telegram', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ token, chat_id: chatId })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                if (successEl) {
+                    successEl.textContent = 'Test message sent successfully! Check your Telegram.';
+                    successEl.style.display = 'block';
+                } else {
+                    showToast('Test message sent successfully!', 'success');
+                }
+            } else {
+                if (errorEl) {
+                    errorEl.textContent = data.error || 'Failed to send test message';
+                    errorEl.style.display = 'block';
+                } else {
+                    showToast('Failed to send test message: ' + (data.error || 'Unknown error'), 'error');
+                }
+            }
+        } catch (error) {
+            console.error('Error testing Telegram:', error);
+            if (errorEl) {
+                errorEl.textContent = 'Connection error: ' + error.message;
+                errorEl.style.display = 'block';
+            } else {
+                showToast('Connection error: ' + error.message, 'error');
+            }
+        } finally {
+            // Reset button state
+            this.disabled = false;
+            this.innerHTML = originalText;
+        }
+    });
+}
 
 // Check if setup is completed
 async function checkSetup() {
@@ -560,12 +747,21 @@ testPlexBtn.addEventListener('click', async () => {
     }
     
     try {
+        // Trim whitespace from all input values
+        const plexUrlTrimmed = plexUrl.trim();
+        const plexTokenTrimmed = plexToken.trim();
+        const libraryNameTrimmed = libraryName.trim();
+        
         const response = await fetch('/api/test-connection', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ plex_url: plexUrl, plex_token: plexToken, library_name: libraryName })
+            body: JSON.stringify({ 
+                plex_url: plexUrlTrimmed, 
+                plex_token: plexTokenTrimmed, 
+                library_name: libraryNameTrimmed 
+            })
         });
         
         const data = await response.json();
@@ -637,27 +833,40 @@ testTelegramBtn.addEventListener('click', async () => {
 // Complete Setup
 const completeSetup = async () => {
     const wizardData = {
-        plex_url: document.getElementById('plex-url').value,
-        plex_token: document.getElementById('plex-token').value,
-        library_name: document.getElementById('library-name').value,
-        collection_name_all_dv: document.getElementById('collection-dv').value,
-        collection_name_profile7: document.getElementById('collection-p7').value,
-        collection_name_truehd_atmos: document.getElementById('collection-atmos').value,
-        max_reports_size: parseInt(document.getElementById('reports-size').value),
+        plex_url: document.getElementById('plex-url').value.trim(),
+        plex_token: document.getElementById('plex-token').value.trim(),
+        library_name: document.getElementById('library-name').value.trim(),
+        collection_name_all_dv: document.getElementById('collection-dv').value.trim(),
+        collection_name_profile7: document.getElementById('collection-p7').value.trim(),
+        collection_name_truehd_atmos: document.getElementById('collection-atmos').value.trim(),
+        max_reports_size: parseInt(document.getElementById('reports-size').value.trim()),
         telegram_enabled: document.getElementById('telegram-enabled').checked,
-        telegram_token: document.getElementById('telegram-token').value,
-        telegram_chat_id: document.getElementById('telegram-chat-id').value,
+        telegram_token: document.getElementById('telegram-token').value.trim(),
+        telegram_chat_id: document.getElementById('telegram-chat-id').value.trim(),
         auto_start: 'none'  // Default to none
     };
     
     try {
-        const response = await fetch('/api/setup', {
+        // Try the api/setup endpoint first
+        let response = await fetch('/api/setup', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify(wizardData)
         });
+        
+        // If the first endpoint fails with 404, try the alternative endpoint
+        if (response.status === 404) {
+            console.log('Endpoint /api/setup not found, trying /api/save-wizard');
+            response = await fetch('/api/save-wizard', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(wizardData)
+            });
+        }
         
         const data = await response.json();
         
@@ -1037,7 +1246,13 @@ startScanBtn.addEventListener('click', async () => {
         startScanBtn.disabled = true;
         startScanBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Starting...';
         
-        const response = await fetch('/api/scan', { method: 'POST' });
+        const response = await fetch('/api/scan', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ operation: 'scan' })
+        });
         const data = await response.json();
         
         if (!data.success) {
@@ -1057,7 +1272,13 @@ verifyCollectionsBtn.addEventListener('click', async () => {
         verifyCollectionsBtn.disabled = true;
         verifyCollectionsBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Verifying...';
         
-        const response = await fetch('/api/verify', { method: 'POST' });
+        const response = await fetch('/api/scan', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ operation: 'verify' })
+        });
         const data = await response.json();
         
         if (!data.success) {
@@ -1077,7 +1298,13 @@ startMonitorBtn.addEventListener('click', async () => {
         startMonitorBtn.disabled = true;
         startMonitorBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Starting...';
         
-        const response = await fetch('/api/monitor/start', { method: 'POST' });
+        const response = await fetch('/api/monitor', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ action: 'start' })
+        });
         const data = await response.json();
         
         if (!data.success) {
@@ -1097,7 +1324,13 @@ stopMonitorBtn.addEventListener('click', async () => {
         stopMonitorBtn.disabled = true;
         stopMonitorBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Stopping...';
         
-        const response = await fetch('/api/monitor/stop', { method: 'POST' });
+        const response = await fetch('/api/monitor', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ action: 'stop' })
+        });
         const data = await response.json();
         
         if (!data.success) {
@@ -2007,3 +2240,77 @@ function openIntervalEditModal() {
         }
     });
 }
+
+// Add direct click handler for Telegram test button
+document.addEventListener('DOMContentLoaded', () => {
+    // This is a backup event handler in case the setupSettingsTelegramTest doesn't work
+    const telegramTestBtn = document.getElementById('settings-test-telegram-btn');
+    if (telegramTestBtn) {
+        console.log('Adding backup click handler for Telegram test button');
+        
+        telegramTestBtn.onclick = async function() {
+            console.log('Telegram test button clicked (backup handler)');
+            const token = document.getElementById('settings-telegram-token').value;
+            const chatId = document.getElementById('settings-telegram-chat-id').value;
+            const successEl = document.getElementById('settings-telegram-success');
+            const errorEl = document.getElementById('settings-telegram-error');
+            
+            // Reset alerts
+            if (successEl) successEl.style.display = 'none';
+            if (errorEl) errorEl.style.display = 'none';
+            
+            if (!token || !chatId) {
+                if (errorEl) {
+                    errorEl.textContent = 'Please fill in both Bot Token and Chat ID fields';
+                    errorEl.style.display = 'block';
+                }
+                return;
+            }
+            
+            // Show loading state
+            this.disabled = true;
+            const originalText = this.innerHTML;
+            this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Testing...';
+            
+            try {
+                const response = await fetch('/api/test-telegram', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ token, chat_id: chatId })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    if (successEl) {
+                        successEl.textContent = 'Test message sent successfully! Check your Telegram.';
+                        successEl.style.display = 'block';
+                    } else {
+                        showToast('Test message sent successfully!', 'success');
+                    }
+                } else {
+                    if (errorEl) {
+                        errorEl.textContent = data.error || 'Failed to send test message';
+                        errorEl.style.display = 'block';
+                    } else {
+                        showToast('Failed to send test message: ' + (data.error || 'Unknown error'), 'error');
+                    }
+                }
+            } catch (error) {
+                console.error('Error testing Telegram:', error);
+                if (errorEl) {
+                    errorEl.textContent = 'Connection error: ' + error.message;
+                    errorEl.style.display = 'block';
+                } else {
+                    showToast('Connection error: ' + error.message, 'error');
+                }
+            } finally {
+                // Reset button state
+                this.disabled = false;
+                this.innerHTML = originalText;
+            }
+        };
+    }
+});

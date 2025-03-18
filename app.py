@@ -1558,10 +1558,25 @@ def iptscanner_settings():
 @app.route('/api/iptscanner/torrents', methods=['GET'])
 def iptscanner_torrents():
     try:
-        # Check if we need to refresh data
-        force_refresh = request.args.get('refresh', 'false').lower() == 'true'
+        # If the check_only parameter is set, just check if cookies exist
+        check_only = request.args.get('check_only', 'false').lower() == 'true'
         
-        if force_refresh:
+        # Get data directory
+        data_dir = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+        cookies_file = os.path.join(data_dir, 'iptscanner', 'cookies.json')
+        
+        # Check if cookies file exists
+        if not os.path.exists(cookies_file):
+            return jsonify({'error': 'No cookies file found. Please add your IPTorrents cookies.'})
+        
+        # If check_only is true, just return success
+        if check_only:
+            return jsonify({'success': True, 'message': 'Cookies file exists'})
+        
+        # Rest of the function logic to get torrents
+        refresh = request.args.get('refresh', 'false').lower() == 'true'
+        
+        if refresh:
             app.logger.info("Force refresh requested for IPTorrents data")
             # Run the JS script to get fresh data
             iptscanner_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
@@ -1721,16 +1736,26 @@ def iptscanner_torrents():
 def test_ipt_login():
     try:
         data = request.get_json()
-        uid = data.get('uid')
-        passkey = data.get('pass')
+        if not data:
+            return jsonify({'success': False, 'error': 'No data provided'}), 400
         
-        app.logger.info("Received IPTScanner test login request")
+        uid = data.get('uid')
+        passkey = data.get('passkey', data.get('pass'))
         
         if not uid or not passkey:
-            app.logger.warning("Missing UID or Pass in login request")
-            return jsonify({"success": False, "message": "UID and Pass are required"}), 400
+            return jsonify({'success': False, 'error': 'UID and passkey are required'}), 400
+
+        # Get data directory from environment variable or use default
+        data_dir = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+        iptscanner_dir = os.path.join(data_dir, 'iptscanner')
         
-        # Create the cookies.json file directly for the JS script to use
+        # Create directory if it doesn't exist
+        os.makedirs(iptscanner_dir, exist_ok=True)
+        
+        # Create the cookies.json file
+        cookies_path = os.path.join(iptscanner_dir, 'cookies.json')
+        
+        # Create cookies in proper format for puppeteer
         cookies = [
             {
                 "name": "uid",
@@ -1748,18 +1773,12 @@ def test_ipt_login():
             }
         ]
         
-        # Ensure the iptscanner directory exists
-        iptscanner_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
-        if not os.path.exists(iptscanner_dir):
-            os.makedirs(iptscanner_dir)
+        app.logger.info(f"Saving cookies to {cookies_path}")
         
-        # Save the cookies
-        cookies_path = os.path.join(iptscanner_dir, 'cookies.json')
         with open(cookies_path, 'w') as f:
-            json.dump(cookies, f)
-            app.logger.info(f"Saved cookies to {cookies_path}")
+            json.dump(cookies, f, indent=4)
         
-        # Save credentials to config.json
+        # Update the config.json file as well
         config_path = os.path.join(iptscanner_dir, 'config.json')
         if os.path.exists(config_path):
             try:
@@ -1770,6 +1789,7 @@ def test_ipt_login():
                 config['uid'] = uid
                 config['pass'] = passkey
                 config['loginComplete'] = True
+                config['cookiesPath'] = cookies_path
                 
                 with open(config_path, 'w') as f:
                     json.dump(config, f, indent=4)
@@ -1777,176 +1797,146 @@ def test_ipt_login():
             except Exception as e:
                 app.logger.error(f"Error updating config: {str(e)}")
         
-        # Run a direct test with Node.js script, which has the proven login check
-        js_script = os.path.join(iptscanner_dir, 'login-test.js')
+        # Run the JS login test script path
+        script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
+        js_script = os.path.join(script_dir, 'login-test.js')
         
-        # Prepare the cookies path for JavaScript - convert backslashes to forward slashes
-        js_cookies_path = cookies_path.replace('\\', '/')
-        
-        # Create a simple script to test the login with improved error handling
-        test_script = """
+        # Create a simple test script if it doesn't exist
+        if not os.path.exists(js_script):
+            app.logger.info("Creating login test script")
+            test_script = """
 const fs = require('fs');
 const puppeteer = require('puppeteer');
 
-// Debug helper
-function debug(msg) {
-  console.error('DEBUG: ' + msg);
+// Check if cookie path was provided
+const cookiePath = process.argv[2];
+if (!cookiePath) {
+    console.error('DEBUG: No cookie path provided');
+    process.exit(1);
 }
+
+console.error('DEBUG: Script started');
+console.error('DEBUG: Starting login test...');
+console.error('DEBUG: Loading cookies from: ' + cookiePath);
+
+// Load cookies
+if (!fs.existsSync(cookiePath)) {
+    console.error('DEBUG: Cookies file not found at: ' + cookiePath);
+    // Try alternative paths
+    const altPath1 = cookiePath.replace('/data/', '/app/');
+    const altPath2 = cookiePath.replace('/app/', '/data/');
+    
+    console.error('DEBUG: Trying alternative path: ' + altPath1);
+    if (fs.existsSync(altPath1)) {
+        console.error('DEBUG: Found cookies at alternative path: ' + altPath1);
+        cookiePath = altPath1;
+    } else {
+        console.error('DEBUG: Trying alternative path: ' + altPath2);
+        if (fs.existsSync(altPath2)) {
+            console.error('DEBUG: Found cookies at alternative path: ' + altPath2);
+            cookiePath = altPath2;
+        } else {
+            console.error('DEBUG: Cookies file not found at any path');
+            console.log(JSON.stringify({ success: false, error: 'Cookies file not found' }));
+            process.exit(1);
+        }
+    }
+}
+
+const cookies = JSON.parse(fs.readFileSync(cookiePath, 'utf8'));
+console.error('DEBUG: Loaded ' + cookies.length + ' cookies');
 
 async function testLogin() {
-  let browser;
-  try {
-    debug('Starting login test...');
-    // Load cookies
-    const cookiesPath = '""" + js_cookies_path + """';
-    debug('Loading cookies from: ' + cookiesPath);
-    
-    if (!fs.existsSync(cookiesPath)) {
-      console.error(JSON.stringify({ 
-        success: false, 
-        error: 'Cookies file not found: ' + cookiesPath 
-      }));
-      process.exit(1);
-    }
-    
-    const cookies = JSON.parse(fs.readFileSync(cookiesPath, 'utf8'));
-    debug('Cookies loaded successfully');
-    
-    // Launch browser with explicit parameters for compatibility
-    debug('Launching browser...');
-    browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-accelerated-2d-canvas",
-        "--disable-gpu"
-      ]
-    });
-    
-    debug('Browser launched successfully');
-    
-    const page = await browser.newPage();
-    debug('New page created');
-    
-    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36");
-    debug('User agent set');
-    
-    // Set cookies and navigate to site
-    debug('Navigating to iptorrents.com...');
-    await page.goto("https://iptorrents.com", { 
-      waitUntil: "domcontentloaded", 
-      timeout: 60000  // Increased timeout to 60 seconds
-    });
-    
-    debug('Setting cookies...');
-    await page.setCookie(...cookies);
-    debug('Cookies set successfully');
-    
-    // Navigate to member page and check login status
-    debug('Navigating to member page...');
-    await page.goto("https://iptorrents.com/t", { 
-      waitUntil: "networkidle2", 
-      timeout: 60000  // Increased timeout 
-    });
-    debug('Loaded member page');
-    
-    // For debugging, save the page content
-    const content = await page.content();
-    debug('Page content length: ' + content.length);
-    
-    // Check if we're logged in by looking for logout link
-    debug('Checking for user menu or logout link...');
-    const userMenu = await page.$('a[href*="/u/"]') || await page.$('a.logout');
-    const isLoggedIn = !!userMenu;
-    debug('Login status: ' + (isLoggedIn ? 'Logged in' : 'Not logged in'));
-    
-    console.log(JSON.stringify({ success: isLoggedIn }));
-    await browser.close();
-    debug('Browser closed');
-  } catch (e) {
-    debug('Error in testLogin: ' + e.message);
-    if (browser) {
-      try {
+    let browser;
+    try {
+        // Launch headless browser
+        browser = await puppeteer.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        });
+        
+        const page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36');
+        
+        // Go to IPTorrents and set cookies
+        await page.goto('https://iptorrents.com');
+        await page.setCookie(...cookies);
+        
+        // Navigate to the site and check if we're logged in
+        await page.goto('https://iptorrents.com/t');
+        
+        // Check for login status by looking for user menu or logout link
+        const userMenu = await page.$('a[href*="/u/"]') || await page.$('a.logout');
+        const isLoggedIn = !!userMenu;
+        
+        console.log(JSON.stringify({ success: isLoggedIn }));
         await browser.close();
-        debug('Browser closed after error');
-      } catch (closeError) {
-        debug('Error closing browser: ' + closeError.message);
-      }
+    } catch (err) {
+        console.error('Error during login test:', err.message);
+        if (browser) await browser.close();
+        console.log(JSON.stringify({ success: false, error: err.message }));
+        process.exit(1);
     }
-    console.error(JSON.stringify({ 
-      success: false, 
-      error: e.message,
-      stack: e.stack
-    }));
-    process.exit(1);
-  }
 }
 
-debug('Script started');
-testLogin().catch(e => {
-  debug('Uncaught error: ' + e.message);
-  console.error(JSON.stringify({ 
-    success: false, 
-    error: 'Uncaught error: ' + e.message,
-    stack: e.stack
-  }));
-  process.exit(1);
-});"""
+testLogin();
+"""
+            with open(js_script, 'w') as f:
+                f.write(test_script)
         
-        # Write the test script
-        with open(js_script, 'w') as f:
-            f.write(test_script)
+        app.logger.info(f"Running login test with Node.js using cookies at {cookies_path}")
         
-        # Run the script with detailed output
-        app.logger.info("Running login test with Node.js")
-        process = subprocess.Popen(
-            ['node', js_script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding='utf-8',   # Set explicit encoding
-            errors='replace',   # Replace invalid characters
-            text=True,
-            cwd=iptscanner_dir
-        )
+        # Check if node_modules are installed
+        node_modules = os.path.join(script_dir, 'node_modules')
+        if not os.path.exists(node_modules):
+            app.logger.warning("Node modules not installed, attempting to install puppeteer")
+            try:
+                subprocess.run(['npm', 'install', 'puppeteer', '--no-save'], cwd=script_dir, check=True)
+            except Exception as e:
+                app.logger.error(f"Failed to install puppeteer: {str(e)}")
+                return jsonify({'success': False, 'error': f"Failed to install required dependencies: {str(e)}"}), 500
         
-        stdout, stderr = process.communicate()
-        
-        # Log everything for diagnostics
-        if stdout:
-            app.logger.info(f"Login test stdout: {stdout.strip()}")
-        
-        if stderr:
-            app.logger.info(f"Login test stderr: {stderr.strip()}")
-        
-        if process.returncode != 0:
-            app.logger.error(f"Login test script failed with code {process.returncode}")
-            
-            # Check if we have useful error info in stderr
-            error_message = "Login test script failed to run - see logs for details"
-            if stderr and "error" in stderr.lower():
-                error_message = stderr.strip()
-            
-            return jsonify({"success": False, "message": error_message}), 500
-        
-        # Parse the result
+        # Run the test script
         try:
-            result = json.loads(stdout.strip())
-            if result.get('success'):
-                app.logger.info("IPT Login successful using JS test")
-                return jsonify({"success": True, "message": "Login successful! Credentials have been saved."})
-            else:
-                error_msg = result.get('error', 'Invalid credentials or site error')
-                app.logger.warning(f"IPT Login failed: {error_msg}")
-                return jsonify({"success": False, "message": f"Login failed. Please check your credentials and try again. Error: {error_msg}"})
-        except json.JSONDecodeError:
-            app.logger.error(f"Failed to parse login test result: {stdout}")
-            return jsonify({"success": False, "message": "Login test returned invalid result. Please check the logs."}), 500
+            process = subprocess.run(
+                ['node', js_script, cookies_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=script_dir,
+                timeout=60
+            )
+            
+            # Log the output for debugging
+            app.logger.info(f"Test login stdout: {process.stdout}")
+            app.logger.info(f"Test login stderr: {process.stderr}")
+            
+            if process.returncode != 0:
+                app.logger.error(f"Login test failed with return code {process.returncode}")
+                return jsonify({'success': False, 'error': 'Login test script failed'}), 500
+            
+            # Parse the result from stdout
+            try:
+                result = json.loads(process.stdout.strip())
+                if result.get('success'):
+                    return jsonify({'success': True, 'message': 'Login successful! Cookies have been saved.'})
+                else:
+                    error_msg = result.get('error', 'Invalid credentials or site error')
+                    return jsonify({'success': False, 'error': f'Login failed: {error_msg}'})
+            except json.JSONDecodeError:
+                app.logger.error(f"Failed to parse test login result: {process.stdout}")
+                return jsonify({'success': False, 'error': 'Invalid response from login test'}), 500
+                
+        except subprocess.TimeoutExpired:
+            app.logger.error("Login test timed out after 60 seconds")
+            return jsonify({'success': False, 'error': 'Login test timed out'}), 500
+        except Exception as e:
+            app.logger.error(f"Error running login test: {str(e)}")
+            return jsonify({'success': False, 'error': f'Error running login test: {str(e)}'}), 500
             
     except Exception as e:
-        app.logger.error(f"IPTScanner test login endpoint error: {str(e)}")
-        return jsonify({"success": False, "message": f"Server error: {str(e)}"}), 500
+        app.logger.error(f"Error in test_ipt_login: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # Helper function to schedule the IPT scanner
 def schedule_ipt_scanner(config):
@@ -2012,73 +2002,178 @@ def schedule_ipt_scanner(config):
     except Exception as e:
         app.logger.error(f"Error initializing scheduler: {str(e)}")
 
-def run_ipt_scanner(config):
+def run_ipt_scanner(config=None):
     """Run the IPT scanner with the provided configuration"""
     try:
-        app.logger.info("Starting IPTScanner...")
-        # Path to the JS script
-        js_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'monitor-iptorrents.js')
+        app.logger.info("Running IPT scanner...")
         
-        # Make sure data directory exists
-        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'data')
-        os.makedirs(data_dir, exist_ok=True)
+        # Get data directory from environment variable or use default
+        data_dir = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+        iptscanner_dir = os.path.join(data_dir, 'iptscanner')
         
-        # Run the JS script directly with one-time option
-        # We use the stored config.json which should be in the format expected by the JS script
-        cmd = ['node', js_script, '--one-time']
+        # Create the data directory if it doesn't exist
+        os.makedirs(iptscanner_dir, exist_ok=True)
         
-        app.logger.info(f"Running command: {' '.join(cmd)}")
+        # Get the path to the IPT scanner script
+        script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
+        script_path = os.path.join(script_dir, 'monitor-iptorrents.js')
         
-        # Set encoding to utf-8 explicitly to avoid decoding errors
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding='utf-8',  # Set explicit encoding
-            errors='replace',  # Replace invalid characters
-            text=True,
-            cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
-        )
+        app.logger.info(f"Script directory: {script_dir}")
+        app.logger.info(f"Script path: {script_path}")
+        app.logger.info(f"Data directory: {data_dir}")
+        app.logger.info(f"IPT scanner directory: {iptscanner_dir}")
         
-        stdout, stderr = process.communicate()
-        
-        # Log output
-        if stdout:
-            for line in stdout.splitlines():
-                if not line.strip():
-                    continue
-                app.logger.info(f"IPTScanner: {line}")
-        
-        if stderr:
-            for line in stderr.splitlines():
-                if not line.strip():
-                    continue
-                app.logger.error(f"IPTScanner error: {line}")
-        
-        if process.returncode != 0:
-            app.logger.error(f"IPTScanner process exited with code {process.returncode}")
+        # Check if the script exists
+        if not os.path.exists(script_path):
+            app.logger.error(f"IPT scanner script not found at {script_path}")
             return False
         
-        app.logger.info("IPTScanner completed successfully")
-        return True
+        # Check and log cookie file existence
+        cookies_path = os.path.join(iptscanner_dir, 'cookies.json')
+        app.logger.info(f"Cookies path: {cookies_path}, exists: {os.path.exists(cookies_path)}")
+        
+        if os.path.exists(cookies_path):
+            try:
+                with open(cookies_path, 'r') as f:
+                    cookies_content = f.read()
+                app.logger.info(f"Cookies file content length: {len(cookies_content)} bytes")
+            except Exception as e:
+                app.logger.error(f"Error reading cookies file: {str(e)}")
+        
+        # Run the script
+        try:
+            # Prepare the command
+            cmd = ['node', script_path, '--one-time']
+            
+            # Add the config path if provided
+            if config:
+                config_path = os.path.join(iptscanner_dir, 'config.json')
+                app.logger.info(f"Writing config to: {config_path}")
+                with open(config_path, 'w') as f:
+                    json.dump(config, f, indent=4)
+                cmd.append(config_path)
+            
+            # Verify config file existence
+            config_path = os.path.join(iptscanner_dir, 'config.json')
+            app.logger.info(f"Config path: {config_path}, exists: {os.path.exists(config_path)}")
+            
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        config_content = json.load(f)
+                    app.logger.info(f"Config file content keys: {list(config_content.keys())}")
+                except Exception as e:
+                    app.logger.error(f"Error reading config file: {str(e)}")
+            
+            app.logger.info(f"Running command: {' '.join(cmd)}")
+            
+            # Set up path for npm modules
+            env = os.environ.copy()
+            node_modules_path = os.path.join(script_dir, 'node_modules')
+            app.logger.info(f"Node modules path: {node_modules_path}, exists: {os.path.exists(node_modules_path)}")
+            
+            # Run the script and capture output
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=script_dir,
+                env=env
+            )
+            
+            # Log output in real-time
+            stdout_data = []
+            stderr_data = []
+            
+            for line in process.stdout:
+                line = line.strip()
+                if line:
+                    app.logger.info(f"IPT Scanner: {line}")
+                    stdout_data.append(line)
+            
+            # Get stderr after process completes
+            stderr = process.stderr.read()
+            if stderr:
+                for line in stderr.splitlines():
+                    if line.strip():
+                        app.logger.error(f"IPT Scanner Error: {line.strip()}")
+                        stderr_data.append(line.strip())
+            
+            # Wait for process to complete, with timeout
+            try:
+                process.wait(timeout=300)  # 5 minute timeout
+            except subprocess.TimeoutExpired:
+                app.logger.error("IPT scanner process timed out and was terminated")
+                process.kill()
+                return False
+            
+            # Check exit code
+            if process.returncode != 0:
+                app.logger.error(f"IPT scanner exited with error code {process.returncode}")
+                return False
+            else:
+                app.logger.info("IPT scanner completed successfully")
+                return True
+                
+        except Exception as e:
+            app.logger.error(f"Error executing IPT scanner: {str(e)}")
+            return False
+    
     except Exception as e:
-        app.logger.exception(f"Error running IPTScanner: {str(e)}")
+        app.logger.error(f"Error in run_ipt_scanner: {str(e)}")
         return False
 
-# Initialize IPTScanner schedule on startup
 def init_iptscanner():
+    """Initialize the IPT scanner components at startup"""
     try:
-        # Load config
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'config.json')
+        app.logger.info("Initializing IPT scanner...")
         
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = json.load(f)
+        # Get data directory from environment variable or use default
+        data_dir = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+        iptscanner_dir = os.path.join(data_dir, 'iptscanner')
+        
+        # Create the iptscanner directory if it doesn't exist
+        os.makedirs(iptscanner_dir, exist_ok=True)
+        os.makedirs(os.path.join(iptscanner_dir, 'data'), exist_ok=True)
+        os.makedirs(os.path.join(iptscanner_dir, 'profile'), exist_ok=True)
+        
+        # Ensure config.json exists
+        config_path = os.path.join(iptscanner_dir, 'config.json')
+        
+        if not os.path.exists(config_path):
+            app.logger.info(f"Creating default IPT scanner config at {config_path}")
+            default_config = {
+                "iptorrents": {
+                    "url": "https://iptorrents.com/login",
+                    "searchUrl": "https://iptorrents.com/t?q=BL%2BEL%2BRPU&qf=adv#torrents",
+                    "searchTerm": "BL+EL+RPU",
+                    "cookiePath": os.path.join(iptscanner_dir, 'cookies.json')
+                },
+                "telegram": {
+                    "enabled": False,
+                    "botToken": "",
+                    "chatId": ""
+                },
+                "checkInterval": "0 */2 * * *",
+                "dataPath": os.path.join(iptscanner_dir, 'data', 'known_torrents.json'),
+                "configPath": config_path,
+                "cookiesPath": os.path.join(iptscanner_dir, 'cookies.json'),
+                "headless": True,
+                "debug": False,
+                "loginComplete": False,
+                "userDataDir": os.path.join(iptscanner_dir, 'profile'),
+                "lastUpdateTime": None
+            }
             
-            # Schedule the scanner
-            schedule_ipt_scanner(config)
+            with open(config_path, 'w') as f:
+                json.dump(default_config, f, indent=4)
+                
+        app.logger.info("IPT scanner initialized")
+        return True
     except Exception as e:
-        app.logger.error(f"Error initializing IPTScanner: {str(e)}")
+        app.logger.error(f"Error initializing IPT scanner: {str(e)}")
+        return False
 
 # Load settings at startup
 load_settings()
@@ -2107,3 +2202,50 @@ if __name__ == "__main__":
     
     # Start the app
     app.run(host='0.0.0.0', port=5000, debug=True)
+
+@app.route('/api/iptscanner/test-run', methods=['POST'])
+def test_run_iptscanner():
+    """Test run the IPT scanner"""
+    try:
+        app.logger.info("Manual test run of IPT scanner triggered")
+        
+        # Get data directory
+        data_dir = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+        iptscanner_dir = os.path.join(data_dir, 'iptscanner')
+        config_path = os.path.join(iptscanner_dir, 'config.json')
+        
+        # Check if node_modules exist and install if needed
+        script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
+        node_modules_path = os.path.join(script_dir, 'node_modules')
+        
+        if not os.path.exists(node_modules_path):
+            app.logger.info("Node modules not found, installing...")
+            try:
+                subprocess.run(['npm', 'install', '--no-cache'], cwd=script_dir, check=True)
+                app.logger.info("Node modules installed successfully")
+            except Exception as e:
+                app.logger.error(f"Failed to install node modules: {str(e)}")
+                return jsonify({'success': False, 'error': f'Failed to install node modules: {str(e)}'}), 500
+        
+        # Check if config exists
+        if not os.path.exists(config_path):
+            return jsonify({'success': False, 'error': f'Config file not found at {config_path}'}), 404
+            
+        # Load the config
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'Failed to load config: {str(e)}'}), 500
+            
+        # Run the scanner
+        result = run_ipt_scanner(config)
+        
+        if result:
+            return jsonify({'success': True, 'message': 'IPT scanner test run completed successfully'})
+        else:
+            return jsonify({'success': False, 'error': 'IPT scanner test run failed, check logs for details'}), 500
+            
+    except Exception as e:
+        app.logger.error(f"Error in test_run_iptscanner: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500

@@ -825,6 +825,9 @@
                                         <div class="card bg-dark mb-3">
                                             <div class="card-body">
                                                 <h6 class="card-title">IPTorrents Login</h6>
+                                                <div id="ipt-cookie-status" class="alert alert-info mb-3" style="display: none;">
+                                                    <i class="fas fa-cookie"></i> <span id="ipt-cookie-status-text">Checking cookie status...</span>
+                                                </div>
                                                 <p class="text-warning">
                                                     <i class="fas fa-exclamation-triangle"></i> You'll need to provide cookies for IPTorrents login.
                                                 </p>
@@ -837,6 +840,7 @@
                                                     <input type="text" class="form-control" id="settings-ipt-pass" placeholder="Enter your 'pass' cookie value">
                                                 </div>
                                                 <button id="test-ipt-login" class="btn btn-outline-primary btn-sm">Test Login</button>
+                                                <button id="test-run-ipt-scanner" class="btn btn-outline-secondary btn-sm ml-2">Test Run Scanner</button>
                                             </div>
                                         </div>
                                     </div>
@@ -860,6 +864,15 @@
                                         <div class="mb-3">
                                             <label for="settings-telegram-chat-id" class="form-label">Chat ID</label>
                                             <input type="text" class="form-control" id="settings-telegram-chat-id">
+                                        </div>
+                                        
+                                        <!-- Add Telegram test button and alerts -->
+                                        <div class="mb-3">
+                                            <div class="alert alert-success" id="settings-telegram-success" style="display: none;"></div>
+                                            <div class="alert alert-danger" id="settings-telegram-error" style="display: none;"></div>
+                                            <button type="button" class="btn btn-primary" id="settings-test-telegram-btn">
+                                                <i class="fas fa-paper-plane"></i> Test Telegram Connection
+                                            </button>
                                         </div>
                                         
                                         <div class="mb-3">
