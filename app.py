@@ -323,11 +323,10 @@ def check_radarr_connection():
     try:
         # Configure the Radarr API with current settings
         import radarr
-        radarr_api = radarr.radarr_api
-        radarr_api.set_config(app.config['RADARR_URL'], app.config['RADARR_API_KEY'])
+        radarr.set_config(app.config['RADARR_URL'], app.config['RADARR_API_KEY'])
         
         # Test the connection
-        result = radarr_api.test_connection()
+        result = radarr.test_connection()
         
         if result['success']:
             state.connection_status['radarr'] = {
@@ -1084,11 +1083,10 @@ def test_radarr():
         
         # Configure the Radarr API with the provided settings
         import radarr
-        radarr_api = radarr.radarr_api
-        radarr_api.set_config(url, api_key)
+        radarr.set_config(url, api_key)
         
         # Test the connection
-        result = radarr_api.test_connection()
+        result = radarr.test_connection()
         
         # Return the result
         if result['success']:
@@ -1796,10 +1794,9 @@ def iptscanner_torrents():
         if radarr_enabled and radarr_url and radarr_api_key:
             try:
                 import radarr
-                radarr_api = radarr.radarr_api
-                radarr_api.set_config(radarr_url, radarr_api_key)
+                radarr.set_config(radarr_url, radarr_api_key)
                 # Get all movies from Radarr
-                radarr_movies = radarr_api.get_movies()
+                radarr_movies = radarr.get_movies()
                 app.logger.info(f"Retrieved {len(radarr_movies) if radarr_movies else 0} movies from Radarr")
             except Exception as e:
                 app.logger.error(f"Error connecting to Radarr: {str(e)}")
@@ -1842,10 +1839,9 @@ def iptscanner_torrents():
                         if title and year:
                             # Search for the movie in Radarr by title and year
                             import radarr
-                            radarr_api = radarr.radarr_api
-                            radarr_api.set_config(radarr_url, radarr_api_key)
+                            radarr.set_config(radarr_url, radarr_api_key)
                             
-                            movie = radarr_api.search_movie_by_title_year(title, year)
+                            movie = radarr.search_movie_by_title_year(title, year)
                             if movie:
                                 # Movie found in Radarr
                                 torrent['radarrStatus'] = 'found'

@@ -212,4 +212,29 @@ class RadarrAPI:
             return None
 
 # Create a singleton instance
-radarr_api = RadarrAPI() 
+radarr_api = RadarrAPI()
+
+# Global functions that use the singleton instance
+def set_config(url, api_key):
+    """Update the Radarr configuration using the singleton instance"""
+    radarr_api.set_config(url, api_key)
+
+def test_connection():
+    """Test connection to Radarr using the singleton instance"""
+    return radarr_api.test_connection()
+
+def get_movies():
+    """Get all movies from Radarr using the singleton instance"""
+    return radarr_api.get_movies()
+
+def search_movie_by_title_year(title, year):
+    """Search for a movie by title and year using the singleton instance"""
+    return radarr_api.search_movie_by_title_year(title, year)
+
+def check_profile7(movie):
+    """Check if a movie has Profile 7 Dolby Vision using the singleton instance"""
+    return radarr_api.check_profile7(movie)
+
+def lookup_movie(title, year):
+    """Lookup a movie in Radarr TMDb database using the singleton instance"""
+    return radarr_api.lookup_movie(title, year) 
