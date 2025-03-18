@@ -2065,4 +2065,12 @@ def test_radarr_in_config():
 
 # Start the Flask application when run directly
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    print("Starting Flask application...")
+    try:
+        app.run(host='0.0.0.0', port=5000, debug=True)
+    except Exception as e:
+        print(f"Error starting Flask application: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        import sys
+        sys.exit(1)
