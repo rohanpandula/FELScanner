@@ -12,6 +12,13 @@ services:
       - iptscanner_data:/data/iptscanner/data
       - iptscanner_profile:/data/iptscanner/profile
     restart: unless-stopped
+    command: >
+      bash -c "cd /app && 
+      echo 'Container started' > /data/container.log && 
+      echo 'Python version:' > /data/container.log && 
+      python --version >> /data/container.log 2>&1 && 
+      echo 'Attempting to start Flask app...' >> /data/container.log && 
+      FLASK_DEBUG=1 FLASK_APP=app.py python -m flask run --host=0.0.0.0 --port=5000 >> /data/container.log 2>&1"
     environment:
       - TZ=${TZ:-America/New_York}
       - DATA_DIR=/data
