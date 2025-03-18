@@ -1,18 +1,44 @@
-from flask import Flask, jsonify, render_template, request
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+# FELScanner - A tool to scan Plex libraries for Dolby Vision movies and create collections
+# Version: 1.1.0
+
 import os
-import json
-import logging
-import asyncio
-import time
-import threading
-import requests
-import pytz
-from datetime import datetime, timedelta
-from flask_compress import Compress
-from plexapi.server import PlexServer
-from scanner import PlexDVScanner
 import sys
+import logging
+import threading
+import json
+import time
+import re
+import datetime
+import random
 import subprocess
+import glob
+from collections import defaultdict
+import concurrent.futures
+import psutil
+from functools import lru_cache
+import shutil
+import math
+import traceback
+import socket
+
+import requests
+from flask import Flask, render_template, request, jsonify, send_file
+from plexapi.server import PlexServer
+from plexapi.exceptions import NotFound
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
+
+# Import the Radarr API module
+try:
+    from radarr import radarr_api
+except ImportError:
+    # If unable to import, try adding the current directory to the path
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from radarr import radarr_api
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(message)s', datefmt='%H:%M:%S')
@@ -20,8 +46,6 @@ log = logging.getLogger()
 
 # Initialize Flask app
 app = Flask(__name__, static_folder='static', template_folder='templates')
-compress = Compress()
-compress.init_app(app)
 
 # Get data directory from environment variable or use default
 DATA_DIR = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
@@ -46,9 +70,15 @@ app.config.update(
     COLLECTION_ENABLE_DV=True,
     COLLECTION_ENABLE_P7=True,
     COLLECTION_ENABLE_ATMOS=True,
-    AUTO_START_MODE="none",
-    MAX_REPORTS_SIZE=5,
-    SCAN_FREQUENCY=24,
+    AUTO_START_MODE="none",  # Options: 'none', 'scan', 'monitor'
+    SETUP_COMPLETED=False,
+    MAX_REPORTS_SIZE=5,  # Maximum size in MB for the reports folder
+    LAST_SCAN_RESULTS={
+        'total': 0,
+        'dv_count': 0,
+        'p7_count': 0,
+        'atmos_count': 0
+    },
     TELEGRAM_ENABLED=os.environ.get('TELEGRAM_ENABLED', 'false').lower() == 'true',
     TELEGRAM_TOKEN=os.environ.get('TELEGRAM_TOKEN', ""),
     TELEGRAM_CHAT_ID=os.environ.get('TELEGRAM_CHAT_ID', ""),
@@ -57,8 +87,10 @@ app.config.update(
     TELEGRAM_NOTIFY_DV=True,
     TELEGRAM_NOTIFY_P7=True,
     TELEGRAM_NOTIFY_ATMOS=True,
-    SETUP_COMPLETED=False,
-    LAST_SCAN_RESULTS={'total': 0, 'dv_count': 0, 'p7_count': 0, 'atmos_count': 0}
+    # Radarr configuration
+    RADARR_ENABLED=os.environ.get('RADARR_ENABLED', 'false').lower() == 'true',
+    RADARR_URL=os.environ.get('RADARR_URL', ""),
+    RADARR_API_KEY=os.environ.get('RADARR_API_KEY', "")
 )
 
 # Queue for Telegram notifications
@@ -85,6 +117,7 @@ class AppState:
         self.connection_status = {
             'plex': {'status': 'unknown', 'message': 'Not connected'},
             'telegram': {'status': 'unknown', 'message': 'Not connected'},
+            'radarr': {'status': 'unknown', 'message': 'Not configured'},
             'server': {'status': 'connected', 'message': 'Web server running'}
         }
         self.lock = threading.RLock()  # For thread-safe state updates
@@ -247,39 +280,73 @@ def check_plex_connection():
 # Check Telegram connection
 def check_telegram_connection():
     if not app.config['TELEGRAM_ENABLED']:
-        with state.lock:
-            state.connection_status['telegram'] = {
-                'status': 'disabled',
-                'message': 'Notifications disabled'
-            }
+        # Skip check if telegram is disabled
+        state.connection_status['telegram'] = {
+            'status': 'disabled',
+            'message': 'Telegram notifications are disabled'
+        }
         return False
-        
+    
     try:
         api_url = f"https://api.telegram.org/bot{app.config['TELEGRAM_TOKEN']}/getMe"
         response = requests.get(api_url, timeout=10)
-        data = response.json()
+        bot_data = response.json()
         
-        if data['ok']:
-            bot_name = data['result']['username']
-            with state.lock:
-                state.connection_status['telegram'] = {
-                    'status': 'connected',
-                    'message': f'Connected (@{bot_name})'
-                }
+        if bot_data.get('ok', False):
+            state.connection_status['telegram'] = {
+                'status': 'connected',
+                'message': f"Connected to bot: @{bot_data['result']['username']}"
+            }
             return True
         else:
-            with state.lock:
-                state.connection_status['telegram'] = {
-                    'status': 'disconnected',
-                    'message': 'Invalid bot token'
-                }
+            state.connection_status['telegram'] = {
+                'status': 'error',
+                'message': 'Invalid bot token'
+            }
+            return False
+    except requests.exceptions.RequestException as e:
+        state.connection_status['telegram'] = {
+            'status': 'error',
+            'message': f'Connection error: {str(e)}'
+        }
+        log.error(f"Telegram connection error: {e}")
+        return False
+
+# Check Radarr connection
+def check_radarr_connection():
+    if not app.config['RADARR_ENABLED']:
+        # Skip check if Radarr is disabled
+        state.connection_status['radarr'] = {
+            'status': 'disabled',
+            'message': 'Radarr integration is disabled'
+        }
+        return False
+    
+    try:
+        # Configure the Radarr API with current settings
+        radarr_api.set_config(app.config['RADARR_URL'], app.config['RADARR_API_KEY'])
+        
+        # Test the connection
+        result = radarr_api.test_connection()
+        
+        if result['success']:
+            state.connection_status['radarr'] = {
+                'status': 'connected',
+                'message': result['message']
+            }
+            return True
+        else:
+            state.connection_status['radarr'] = {
+                'status': 'error',
+                'message': result.get('error', 'Unknown error')
+            }
             return False
     except Exception as e:
-        with state.lock:
-            state.connection_status['telegram'] = {
-                'status': 'disconnected',
-                'message': f'Error: {str(e)}'
-            }
+        state.connection_status['radarr'] = {
+            'status': 'error',
+            'message': f'Connection error: {str(e)}'
+        }
+        log.error(f"Radarr connection error: {e}")
         return False
 
 # Background processing for Telegram notification queue
@@ -1005,6 +1072,38 @@ def test_telegram():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
+@app.route('/api/test-radarr', methods=['POST'])
+def test_radarr():
+    try:
+        data = request.json
+        url = data.get('url')
+        api_key = data.get('api_key')
+        
+        if not url or not api_key:
+            return jsonify({'success': False, 'error': 'Missing required fields'})
+        
+        # Configure the Radarr API with the provided settings
+        radarr = radarr_api.RadarrAPI(url, api_key)
+        
+        # Test the connection
+        result = radarr.test_connection()
+        
+        # Return the result
+        if result['success']:
+            return jsonify({
+                'success': True, 
+                'version': result.get('version', 'Unknown'), 
+                'message': result.get('message', 'Connected successfully')
+            })
+        else:
+            return jsonify({
+                'success': False, 
+                'error': result.get('error', 'Failed to connect to Radarr')
+            })
+    except Exception as e:
+        log.error(f"Radarr test connection error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
 @app.route('/api/scan', methods=['POST'])
 def start_scan():
     with state.lock:
@@ -1631,6 +1730,7 @@ def iptscanner_torrents():
         config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'config.json')
         last_check = None
         search_term = "BL+EL+RPU"
+        radarr_config = None
         
         if os.path.exists(config_path):
             try:
@@ -1638,6 +1738,7 @@ def iptscanner_torrents():
                     config = json.load(f)
                 last_check = config.get('lastUpdateTime')
                 search_term = config.get('iptorrents', {}).get('searchTerm', search_term)
+                radarr_config = config.get('radarr', {})
                 
                 # If no lastUpdateTime in config, set it now
                 if not last_check:
@@ -1683,7 +1784,24 @@ def iptscanner_torrents():
                 "searchTerm": search_term
             })
         
-        # If torrents is a List, sort and return it
+        # Check if we have valid Radarr configuration and should add Radarr information
+        radarr_enabled = radarr_config and radarr_config.get('enabled', False)
+        radarr_url = radarr_config.get('url') if radarr_enabled else None
+        radarr_api_key = radarr_config.get('apiKey') if radarr_enabled else None
+        
+        # Initialize Radarr API if enabled
+        radarr_movies = None
+        if radarr_enabled and radarr_url and radarr_api_key:
+            try:
+                from radarr import radarr_api
+                radarr = radarr_api.RadarrAPI(radarr_url, radarr_api_key)
+                # Get all movies from Radarr
+                radarr_movies = radarr.get_movies()
+                app.logger.info(f"Retrieved {len(radarr_movies) if radarr_movies else 0} movies from Radarr")
+            except Exception as e:
+                app.logger.error(f"Error connecting to Radarr: {str(e)}")
+        
+        # If torrents is a List, process and return it
         if isinstance(torrents, list):
             # Parse time strings to ensure correct sorting
             for torrent in torrents:
@@ -1707,6 +1825,43 @@ def iptscanner_torrents():
                         torrent['sortTime'] = time.time() - (weeks * 604800)
                     else:
                         torrent['sortTime'] = 0
+                
+                # Add Radarr information if we have movies loaded
+                if radarr_movies:
+                    torrent['radarrStatus'] = 'unknown'
+                    torrent_title = torrent.get('title', '')
+                    
+                    # Try to extract title and year from the torrent name
+                    movie_info = extract_movie_info(torrent_title)
+                    if movie_info:
+                        title, year = movie_info.get('title'), movie_info.get('year')
+                        
+                        if title and year:
+                            # Search for the movie in Radarr by title and year
+                            from radarr import radarr_api
+                            radarr = radarr_api.RadarrAPI(radarr_url, radarr_api_key)
+                            
+                            movie = radarr.search_movie_by_title_year(title, year)
+                            if movie:
+                                # Movie found in Radarr
+                                torrent['radarrStatus'] = 'found'
+                                torrent['radarrInfo'] = {
+                                    'id': movie.get('id'),
+                                    'title': movie.get('title'),
+                                    'year': movie.get('year'),
+                                    'monitored': movie.get('monitored', False),
+                                    'hasFile': movie.get('hasFile', False),
+                                    'status': movie.get('status', 'unknown')
+                                }
+                            else:
+                                # Movie not found in Radarr
+                                torrent['radarrStatus'] = 'notFound'
+                        else:
+                            # Couldn't extract title and year
+                            torrent['radarrStatus'] = 'parseError'
+                    else:
+                        # Couldn't extract title and year
+                        torrent['radarrStatus'] = 'parseError'
             
             # Sort torrents by isNew and then by added date
             sorted_torrents = sorted(
@@ -1718,7 +1873,8 @@ def iptscanner_torrents():
             return jsonify({
                 "torrents": sorted_torrents,
                 "lastCheck": last_check,
-                "searchTerm": search_term
+                "searchTerm": search_term,
+                "radarrEnabled": radarr_enabled
             })
         
         # If we get here, the format is unexpected - just return it as-is
@@ -1726,11 +1882,44 @@ def iptscanner_torrents():
         return jsonify({
             "torrents": torrents,
             "lastCheck": last_check,
-            "searchTerm": search_term
+            "searchTerm": search_term,
+            "radarrEnabled": radarr_enabled
         })
     except Exception as e:
         app.logger.error(f"Error getting IPTScanner torrents: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+def extract_movie_info(torrent_title):
+    """
+    Extract movie title and year from a torrent name
+    
+    Example formats:
+    - Movie.Name.2020.2160p.BluRay.x265.10bit.HDR.DTS-HD.MA.TrueHD.7.1.Atmos-SWTYBLZ
+    - Movie Name (2020) 2160p BluRay x265 10bit HDR DTS-HD MA TrueHD 7.1 Atmos-SWTYBLZ
+    """
+    try:
+        # Pattern to match movie name followed by year in parentheses or dots
+        pattern1 = r'(.+?)[\.\s]\(?(\d{4})\)?[\.\s]'
+        pattern2 = r'(.+?)[\.\s]\[?(\d{4})\]?[\.\s]'
+        
+        match = re.search(pattern1, torrent_title)
+        if not match:
+            match = re.search(pattern2, torrent_title)
+        
+        if match:
+            title = match.group(1).replace('.', ' ').strip()
+            year = match.group(2)
+            
+            # Return structured data
+            return {
+                'title': title,
+                'year': year
+            }
+        
+        return None
+    except Exception as e:
+        app.logger.error(f"Error extracting movie info from '{torrent_title}': {str(e)}")
+        return None
 
 @app.route('/api/iptscanner/test-login', methods=['POST'])
 def test_ipt_login():
@@ -1797,455 +1986,79 @@ def test_ipt_login():
             except Exception as e:
                 app.logger.error(f"Error updating config: {str(e)}")
         
-        # Run the JS login test script path
-        script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
-        js_script = os.path.join(script_dir, 'login-test.js')
-        
-        # Create a simple test script if it doesn't exist
-        if not os.path.exists(js_script):
-            app.logger.info("Creating login test script")
-            test_script = """
-const fs = require('fs');
-const puppeteer = require('puppeteer');
-
-// Check if cookie path was provided
-const cookiePath = process.argv[2];
-if (!cookiePath) {
-    console.error('DEBUG: No cookie path provided');
-    process.exit(1);
-}
-
-console.error('DEBUG: Script started');
-console.error('DEBUG: Starting login test...');
-console.error('DEBUG: Loading cookies from: ' + cookiePath);
-
-// Load cookies
-if (!fs.existsSync(cookiePath)) {
-    console.error('DEBUG: Cookies file not found at: ' + cookiePath);
-    // Try alternative paths
-    const altPath1 = cookiePath.replace('/data/', '/app/');
-    const altPath2 = cookiePath.replace('/app/', '/data/');
-    
-    console.error('DEBUG: Trying alternative path: ' + altPath1);
-    if (fs.existsSync(altPath1)) {
-        console.error('DEBUG: Found cookies at alternative path: ' + altPath1);
-        cookiePath = altPath1;
-    } else {
-        console.error('DEBUG: Trying alternative path: ' + altPath2);
-        if (fs.existsSync(altPath2)) {
-            console.error('DEBUG: Found cookies at alternative path: ' + altPath2);
-            cookiePath = altPath2;
-        } else {
-            console.error('DEBUG: Cookies file not found at any path');
-            console.log(JSON.stringify({ success: false, error: 'Cookies file not found' }));
-            process.exit(1);
-        }
-    }
-}
-
-const cookies = JSON.parse(fs.readFileSync(cookiePath, 'utf8'));
-console.error('DEBUG: Loaded ' + cookies.length + ' cookies');
-
-async function testLogin() {
-    let browser;
-    try {
-        // Launch headless browser
-        browser = await puppeteer.launch({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-        
-        const page = await browser.newPage();
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36');
-        
-        // Go to IPTorrents and set cookies
-        await page.goto('https://iptorrents.com');
-        await page.setCookie(...cookies);
-        
-        // Navigate to the site and check if we're logged in
-        await page.goto('https://iptorrents.com/t');
-        
-        // Check for login status by looking for user menu or logout link
-        const userMenu = await page.$('a[href*="/u/"]') || await page.$('a.logout');
-        const isLoggedIn = !!userMenu;
-        
-        console.log(JSON.stringify({ success: isLoggedIn }));
-        await browser.close();
-    } catch (err) {
-        console.error('Error during login test:', err.message);
-        if (browser) await browser.close();
-        console.log(JSON.stringify({ success: false, error: err.message }));
-        process.exit(1);
-    }
-}
-
-testLogin();
-"""
-            with open(js_script, 'w') as f:
-                f.write(test_script)
-        
-        app.logger.info(f"Running login test with Node.js using cookies at {cookies_path}")
-        
-        # Check if node_modules are installed
-        node_modules = os.path.join(script_dir, 'node_modules')
-        if not os.path.exists(node_modules):
-            app.logger.warning("Node modules not installed, attempting to install puppeteer")
-            try:
-                subprocess.run(['npm', 'install', 'puppeteer', '--no-save'], cwd=script_dir, check=True)
-            except Exception as e:
-                app.logger.error(f"Failed to install puppeteer: {str(e)}")
-                return jsonify({'success': False, 'error': f"Failed to install required dependencies: {str(e)}"}), 500
-        
-        # Run the test script
-        try:
-            process = subprocess.run(
-                ['node', js_script, cookies_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=script_dir,
-                timeout=60
-            )
-            
-            # Log the output for debugging
-            app.logger.info(f"Test login stdout: {process.stdout}")
-            app.logger.info(f"Test login stderr: {process.stderr}")
-            
-            if process.returncode != 0:
-                app.logger.error(f"Login test failed with return code {process.returncode}")
-                return jsonify({'success': False, 'error': 'Login test script failed'}), 500
-            
-            # Parse the result from stdout
-            try:
-                result = json.loads(process.stdout.strip())
-                if result.get('success'):
-                    return jsonify({'success': True, 'message': 'Login successful! Cookies have been saved.'})
-                else:
-                    error_msg = result.get('error', 'Invalid credentials or site error')
-                    return jsonify({'success': False, 'error': f'Login failed: {error_msg}'})
-            except json.JSONDecodeError:
-                app.logger.error(f"Failed to parse test login result: {process.stdout}")
-                return jsonify({'success': False, 'error': 'Invalid response from login test'}), 500
-                
-        except subprocess.TimeoutExpired:
-            app.logger.error("Login test timed out after 60 seconds")
-            return jsonify({'success': False, 'error': 'Login test timed out'}), 500
-        except Exception as e:
-            app.logger.error(f"Error running login test: {str(e)}")
-            return jsonify({'success': False, 'error': f'Error running login test: {str(e)}'}), 500
-            
+        # Return success with just the credentials saved
+        return jsonify({'success': True, 'message': 'Credentials saved successfully'})
     except Exception as e:
         app.logger.error(f"Error in test_ipt_login: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
-# Helper function to schedule the IPT scanner
-def schedule_ipt_scanner(config):
+@app.route('/api/iptscanner/test-radarr', methods=['POST'])
+def test_radarr_in_config():
     try:
-        from apscheduler.schedulers.background import BackgroundScheduler
-        from apscheduler.triggers.interval import IntervalTrigger
-        import pytz
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'error': 'No data provided'}), 400
         
-        global scheduler
+        url = data.get('url')
+        api_key = data.get('apiKey')
         
-        # Initialize scheduler if not already done
-        if 'scheduler' not in globals() or scheduler is None:
-            # Use scheduler with explicit UTC timezone (supported)
-            scheduler = BackgroundScheduler(
-                daemon=True, 
-                job_defaults={'misfire_grace_time': 3600},
-                timezone=pytz.utc
-            )
-            scheduler.start()
-            app.logger.info("Scheduler started")
+        if not url or not api_key:
+            return jsonify({'success': False, 'error': 'URL and API key are required'}), 400
         
-        # Remove existing IPT scanner jobs
-        for job in scheduler.get_jobs():
-            if job.id == 'iptscanner':
-                scheduler.remove_job(job.id)
-                app.logger.info("Removed existing IPTScanner job")
+        # Configure the Radarr API with the provided settings
+        from radarr import radarr_api
+        radarr = radarr_api.RadarrAPI(url, api_key)
         
-        # Add new job if enabled
-        if config.get('enabled', True):
-            # Convert cron expression to interval hours for simplicity
-            interval_hours = 2  # Default 2 hours
-            
-            cron_expr = config.get('checkInterval', '0 */2 * * *')
-            if '*/1' in cron_expr:
-                interval_hours = 1
-            elif '*/2' in cron_expr:
-                interval_hours = 2
-            elif '*/6' in cron_expr:
-                interval_hours = 6
-            elif '*/12' in cron_expr:
-                interval_hours = 12
-            elif '0 0' in cron_expr:  # Daily at midnight
-                interval_hours = 24
-            
-            app.logger.info(f"Setting IPTScanner interval to {interval_hours} hours")
-            
-            # Add job with interval trigger instead of cron
-            scheduler.add_job(
-                func=run_ipt_scanner,
-                args=[config],
-                trigger='interval',
-                hours=interval_hours,
-                id='iptscanner',
-                replace_existing=True
-            )
-            
-            # Run immediately if debug is enabled
-            if config.get('debug', False):
-                app.logger.info("Debug mode enabled, running IPTScanner immediately")
-                run_ipt_scanner(config)
-            
-            app.logger.info(f"IPTScanner scheduled to run every {interval_hours} hours")
-    except Exception as e:
-        app.logger.error(f"Error initializing scheduler: {str(e)}")
-
-def run_ipt_scanner(config=None):
-    """Run the IPT scanner with the provided configuration"""
-    try:
-        app.logger.info("Running IPT scanner...")
+        # Test the connection
+        result = radarr.test_connection()
         
-        # Get data directory from environment variable or use default
-        data_dir = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
-        iptscanner_dir = os.path.join(data_dir, 'iptscanner')
-        
-        # Create the data directory if it doesn't exist
-        os.makedirs(iptscanner_dir, exist_ok=True)
-        
-        # Get the path to the IPT scanner script
-        script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
-        script_path = os.path.join(script_dir, 'monitor-iptorrents.js')
-        
-        app.logger.info(f"Script directory: {script_dir}")
-        app.logger.info(f"Script path: {script_path}")
-        app.logger.info(f"Data directory: {data_dir}")
-        app.logger.info(f"IPT scanner directory: {iptscanner_dir}")
-        
-        # Check if the script exists
-        if not os.path.exists(script_path):
-            app.logger.error(f"IPT scanner script not found at {script_path}")
-            return False
-        
-        # Check and log cookie file existence
-        cookies_path = os.path.join(iptscanner_dir, 'cookies.json')
-        app.logger.info(f"Cookies path: {cookies_path}, exists: {os.path.exists(cookies_path)}")
-        
-        if os.path.exists(cookies_path):
+        # Update the config.json file with Radarr settings if successful
+        if result['success']:
             try:
-                with open(cookies_path, 'r') as f:
-                    cookies_content = f.read()
-                app.logger.info(f"Cookies file content length: {len(cookies_content)} bytes")
-            except Exception as e:
-                app.logger.error(f"Error reading cookies file: {str(e)}")
-        
-        # Run the script
-        try:
-            # Prepare the command
-            cmd = ['node', script_path, '--one-time']
-            
-            # Add the config path if provided
-            if config:
+                # Get data directory from environment variable or use default
+                data_dir = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+                iptscanner_dir = os.path.join(data_dir, 'iptscanner')
                 config_path = os.path.join(iptscanner_dir, 'config.json')
-                app.logger.info(f"Writing config to: {config_path}")
-                with open(config_path, 'w') as f:
-                    json.dump(config, f, indent=4)
-                cmd.append(config_path)
-            
-            # Verify config file existence
-            config_path = os.path.join(iptscanner_dir, 'config.json')
-            app.logger.info(f"Config path: {config_path}, exists: {os.path.exists(config_path)}")
-            
-            if os.path.exists(config_path):
-                try:
+                
+                if os.path.exists(config_path):
                     with open(config_path, 'r') as f:
-                        config_content = json.load(f)
-                    app.logger.info(f"Config file content keys: {list(config_content.keys())}")
-                except Exception as e:
-                    app.logger.error(f"Error reading config file: {str(e)}")
-            
-            app.logger.info(f"Running command: {' '.join(cmd)}")
-            
-            # Set up path for npm modules
-            env = os.environ.copy()
-            node_modules_path = os.path.join(script_dir, 'node_modules')
-            app.logger.info(f"Node modules path: {node_modules_path}, exists: {os.path.exists(node_modules_path)}")
-            
-            # Run the script and capture output
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=script_dir,
-                env=env
-            )
-            
-            # Log output in real-time
-            stdout_data = []
-            stderr_data = []
-            
-            for line in process.stdout:
-                line = line.strip()
-                if line:
-                    app.logger.info(f"IPT Scanner: {line}")
-                    stdout_data.append(line)
-            
-            # Get stderr after process completes
-            stderr = process.stderr.read()
-            if stderr:
-                for line in stderr.splitlines():
-                    if line.strip():
-                        app.logger.error(f"IPT Scanner Error: {line.strip()}")
-                        stderr_data.append(line.strip())
-            
-            # Wait for process to complete, with timeout
-            try:
-                process.wait(timeout=300)  # 5 minute timeout
-            except subprocess.TimeoutExpired:
-                app.logger.error("IPT scanner process timed out and was terminated")
-                process.kill()
-                return False
-            
-            # Check exit code
-            if process.returncode != 0:
-                app.logger.error(f"IPT scanner exited with error code {process.returncode}")
-                return False
-            else:
-                app.logger.info("IPT scanner completed successfully")
-                return True
-                
-        except Exception as e:
-            app.logger.error(f"Error executing IPT scanner: {str(e)}")
-            return False
-    
-    except Exception as e:
-        app.logger.error(f"Error in run_ipt_scanner: {str(e)}")
-        return False
-
-def init_iptscanner():
-    """Initialize the IPT scanner components at startup"""
-    try:
-        app.logger.info("Initializing IPT scanner...")
-        
-        # Get data directory from environment variable or use default
-        data_dir = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
-        iptscanner_dir = os.path.join(data_dir, 'iptscanner')
-        
-        # Create the iptscanner directory if it doesn't exist
-        os.makedirs(iptscanner_dir, exist_ok=True)
-        os.makedirs(os.path.join(iptscanner_dir, 'data'), exist_ok=True)
-        os.makedirs(os.path.join(iptscanner_dir, 'profile'), exist_ok=True)
-        
-        # Ensure config.json exists
-        config_path = os.path.join(iptscanner_dir, 'config.json')
-        
-        if not os.path.exists(config_path):
-            app.logger.info(f"Creating default IPT scanner config at {config_path}")
-            default_config = {
-                "iptorrents": {
-                    "url": "https://iptorrents.com/login",
-                    "searchUrl": "https://iptorrents.com/t?q=BL%2BEL%2BRPU&qf=adv#torrents",
-                    "searchTerm": "BL+EL+RPU",
-                    "cookiePath": os.path.join(iptscanner_dir, 'cookies.json')
-                },
-                "telegram": {
-                    "enabled": False,
-                    "botToken": "",
-                    "chatId": ""
-                },
-                "checkInterval": "0 */2 * * *",
-                "dataPath": os.path.join(iptscanner_dir, 'data', 'known_torrents.json'),
-                "configPath": config_path,
-                "cookiesPath": os.path.join(iptscanner_dir, 'cookies.json'),
-                "headless": True,
-                "debug": False,
-                "loginComplete": False,
-                "userDataDir": os.path.join(iptscanner_dir, 'profile'),
-                "lastUpdateTime": None
-            }
-            
-            with open(config_path, 'w') as f:
-                json.dump(default_config, f, indent=4)
-                
-        app.logger.info("IPT scanner initialized")
-        return True
-    except Exception as e:
-        app.logger.error(f"Error initializing IPT scanner: {str(e)}")
-        return False
-
-# Load settings at startup
-load_settings()
-
-# Start notification processor
-start_notification_processor()
-
-# Auto-start if configured
-if app.config['SETUP_COMPLETED'] and app.config['AUTO_START_MODE'] == 'monitor':
-    monitor_thread = threading.Thread(target=run_monitor)
-    monitor_thread.daemon = True
-    monitor_thread.start()
-
-# Replace the @app.before_first_request decorator
-# Old code:
-# @app.before_first_request
-# def init_iptscanner():
-
-# New initialization approach
-init_iptscanner()
-
-# Add this at the bottom of the file, before app.run()
-if __name__ == "__main__":
-    # Initialize IPTScanner
-    init_iptscanner()
-    
-    # Start the app
-    app.run(host='0.0.0.0', port=5000, debug=True)
-
-@app.route('/api/iptscanner/test-run', methods=['POST'])
-def test_run_iptscanner():
-    """Test run the IPT scanner"""
-    try:
-        app.logger.info("Manual test run of IPT scanner triggered")
-        
-        # Get data directory
-        data_dir = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
-        iptscanner_dir = os.path.join(data_dir, 'iptscanner')
-        config_path = os.path.join(iptscanner_dir, 'config.json')
-        
-        # Check if node_modules exist and install if needed
-        script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
-        node_modules_path = os.path.join(script_dir, 'node_modules')
-        
-        if not os.path.exists(node_modules_path):
-            app.logger.info("Node modules not found, installing...")
-            try:
-                subprocess.run(['npm', 'install', '--no-cache'], cwd=script_dir, check=True)
-                app.logger.info("Node modules installed successfully")
+                        config = json.load(f)
+                    
+                    # Add or update Radarr configuration
+                    if 'radarr' not in config:
+                        config['radarr'] = {}
+                    
+                    config['radarr']['url'] = url
+                    config['radarr']['apiKey'] = api_key
+                    config['radarr']['enabled'] = True
+                    
+                    with open(config_path, 'w') as f:
+                        json.dump(config, f, indent=4)
+                        app.logger.info("Updated config with Radarr settings")
             except Exception as e:
-                app.logger.error(f"Failed to install node modules: {str(e)}")
-                return jsonify({'success': False, 'error': f'Failed to install node modules: {str(e)}'}), 500
+                app.logger.error(f"Error updating config with Radarr settings: {str(e)}")
+                # Return success but mention config wasn't updated
+                return jsonify({
+                    'success': True, 
+                    'version': result.get('version', 'Unknown'),
+                    'message': result.get('message', 'Connected successfully'),
+                    'config_updated': False,
+                    'config_error': str(e)
+                })
         
-        # Check if config exists
-        if not os.path.exists(config_path):
-            return jsonify({'success': False, 'error': f'Config file not found at {config_path}'}), 404
-            
-        # Load the config
-        try:
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-        except Exception as e:
-            return jsonify({'success': False, 'error': f'Failed to load config: {str(e)}'}), 500
-            
-        # Run the scanner
-        result = run_ipt_scanner(config)
-        
-        if result:
-            return jsonify({'success': True, 'message': 'IPT scanner test run completed successfully'})
+        # Return the result
+        if result['success']:
+            return jsonify({
+                'success': True, 
+                'version': result.get('version', 'Unknown'), 
+                'message': result.get('message', 'Connected successfully'),
+                'config_updated': True
+            })
         else:
-            return jsonify({'success': False, 'error': 'IPT scanner test run failed, check logs for details'}), 500
-            
+            return jsonify({
+                'success': False, 
+                'error': result.get('error', 'Failed to connect to Radarr')
+            })
     except Exception as e:
-        app.logger.error(f"Error in test_run_iptscanner: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        app.logger.error(f"Radarr test connection error: {e}")
+        return jsonify({'success': False, 'error': str(e)})
