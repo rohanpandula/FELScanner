@@ -2064,35 +2064,55 @@ def test_radarr_in_config():
         return jsonify({'success': False, 'error': str(e)})
 
 # Start the Flask application when run directly
-if __name__ == "__main__":
-    print("Starting Flask application...")
+if __name__ == '__main__':
+    import sys
+    import traceback
+    
     try:
-        # Parse command line arguments if any
-        import sys
-        host = '0.0.0.0'  # Default host
-        port = 5000      # Default port
-        debug = True     # Default debug setting
+        print("Starting Flask application...", file=sys.stderr)
         
-        # Check for arguments in the form of --host=X, --port=Y, etc.
-        for arg in sys.argv[1:]:
-            if arg.startswith('--host='):
-                host = arg.split('=')[1]
-                print(f"Using host: {host}")
-            elif arg.startswith('--port='):
-                port = int(arg.split('=')[1])
-                print(f"Using port: {port}")
-            elif arg == '--debug' or arg == '--debug=True':
-                debug = True
-                print("Debug mode enabled")
-            elif arg == '--no-debug' or arg == '--debug=False':
-                debug = False
-                print("Debug mode disabled")
+        host = '0.0.0.0'
+        port = 5000
+        debug = True
         
-        print(f"Starting Flask app on {host}:{port} (debug={debug})")
+        # Parse command line arguments
+        if '--host' in sys.argv:
+            idx = sys.argv.index('--host')
+            if idx + 1 < len(sys.argv):
+                host = sys.argv[idx + 1]
+                print(f"Setting host to: {host}", file=sys.stderr)
+        
+        if '--port' in sys.argv:
+            idx = sys.argv.index('--port')
+            if idx + 1 < len(sys.argv):
+                try:
+                    port = int(sys.argv[idx + 1])
+                    print(f"Setting port to: {port}", file=sys.stderr)
+                except ValueError:
+                    print(f"Invalid port number: {sys.argv[idx + 1]}", file=sys.stderr)
+        
+        if '--debug' in sys.argv:
+            debug = True
+            print("Debug mode enabled", file=sys.stderr)
+        elif '--no-debug' in sys.argv:
+            debug = False
+            print("Debug mode disabled", file=sys.stderr)
+        
+        print(f"Attempting to start Flask app with host={host}, port={port}, debug={debug}", file=sys.stderr)
+        
+        # Log flask version
+        import flask
+        print(f"Flask version: {flask.__version__}", file=sys.stderr)
+        
+        # Force flush stdout/stderr to ensure logs are written
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
+        # Start the Flask app
         app.run(host=host, port=port, debug=debug)
     except Exception as e:
-        print(f"Error starting Flask application: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        import sys
+        print(f"ERROR: Failed to start Flask application: {e}", file=sys.stderr)
+        print("Traceback:", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
         sys.exit(1)
