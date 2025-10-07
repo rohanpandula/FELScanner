@@ -92,6 +92,62 @@ let buddyCelebrationTimer = null;
 // Global variable to store rounding preference
 window.useWholeNumbers = true;
 
+function collapseHeroIfSetupComplete() {
+    const heroSection = document.getElementById('dashboard-hero');
+    if (!setupWizard || !heroSection) {
+        return;
+    }
+
+    const wizardVisible = window.getComputedStyle(setupWizard).display !== 'none';
+    if (wizardVisible) {
+        heroSection.classList.remove('hero-collapsed');
+    } else {
+        heroSection.classList.add('hero-collapsed');
+    }
+}
+
+function activateDashboardTab(tabId) {
+    const heroSection = document.getElementById('dashboard-hero');
+    if (heroSection) {
+        heroSection.classList.add('hero-collapsed');
+    }
+
+    const navLinks = document.querySelectorAll('#dashboard-tabs .nav-link');
+    navLinks.forEach(link => {
+        const isActive = link.getAttribute('data-dashboard-tab') === tabId;
+        link.classList.toggle('active', isActive);
+        link.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    });
+
+    document.querySelectorAll('.tab-pane').forEach(pane => {
+        pane.classList.remove('active', 'show');
+    });
+
+    const targetPane = document.getElementById(tabId);
+    if (targetPane) {
+        targetPane.classList.add('active', 'show');
+    }
+
+    if (tabId === 'reports') {
+        loadReports();
+    } else if (tabId === 'iptscanner') {
+        fetchIPTData();
+    } else if (tabId === 'settings') {
+        loadSettings();
+    }
+
+    // Keep the tab content in view so the change is obvious even with a tall hero section.
+    const scrollTarget = targetPane || mainDashboard;
+    if (scrollTarget && typeof scrollTarget.scrollIntoView === 'function') {
+        // Use a small timeout so the DOM has applied visibility before scrolling.
+        setTimeout(() => {
+            scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 50);
+    }
+}
+
+window.activateDashboardTab = activateDashboardTab;
+
 const onboardingSteps = [
     {
         emoji: '👋',
@@ -427,6 +483,33 @@ async function fetchIPTData(forceRefresh = false) {
     }
 }
 
+function setupTabFallbacks() {
+    const tabTriggers = document.querySelectorAll('[data-bs-toggle="tab"], [data-dashboard-tab]');
+    if (!tabTriggers.length) {
+        return;
+    }
+
+    tabTriggers.forEach(trigger => {
+        trigger.addEventListener('click', (event) => {
+            const targetAttr = trigger.getAttribute('data-bs-target') || trigger.getAttribute('data-dashboard-tab');
+            if (!targetAttr) {
+                return;
+            }
+
+            const tabId = targetAttr.startsWith('#') ? targetAttr.substring(1) : targetAttr;
+
+            if (typeof bootstrap !== 'undefined' && bootstrap.Tab) {
+                event.preventDefault();
+                const tabInstance = bootstrap.Tab.getOrCreateInstance(trigger);
+                tabInstance.show();
+            }
+
+            event.preventDefault();
+            activateDashboardTab(tabId);
+        });
+    });
+}
+
 // Check if cookies are stored and valid
 async function checkCookieStatus() {
     try {
@@ -477,6 +560,10 @@ async function checkCookieStatus() {
 async function loadIPTSettings() {
     try {
         const response = await fetch('/api/iptscanner/settings');
+        if (!response.ok) {
+            throw new Error(describeHttpStatus(response.status));
+        }
+
         const settings = await response.json();
         
         // Update UI with settings
@@ -508,6 +595,9 @@ async function loadIPTSettings() {
         return settings;
     } catch (error) {
         console.error('Error loading IPT settings:', error);
+        if (typeof logIPTMessage === 'function') {
+            logIPTMessage(`Error loading IPT settings: ${error.message}`);
+        }
         return {};
     }
 }
@@ -748,15 +838,12 @@ async function fetchRoundingPreference() {
 // Initial Setup
 document.addEventListener('DOMContentLoaded', async () => {
     // Check if the dashboard is already visible (set by server-side script)
-    const dashboardAlreadyVisible = window.getComputedStyle(mainDashboard).display === 'block';
-    
-    if (!dashboardAlreadyVisible) {
-        await checkSetup();
-    } else {
-        console.log('Dashboard already visible, skipping checkSetup call');
-        isPolling = true;
-    }
-    
+    await checkSetup();
+
+    collapseHeroIfSetupComplete();
+
+    setupTabFallbacks();
+
     loadReports();
     
     // Load settings first
@@ -898,12 +985,15 @@ async function checkSetup() {
             mainDashboard.style.display = 'none';
             isPolling = false;
         }
+
+        collapseHeroIfSetupComplete();
     } catch (error) {
         console.error('Error checking setup:', error);
         // On error, default to showing the dashboard to avoid getting stuck in setup
         setupWizard.style.display = 'none';
         mainDashboard.style.display = 'block';
         isPolling = true;
+        collapseHeroIfSetupComplete();
     }
 }
 
@@ -1420,17 +1510,57 @@ function getCollectionNameByTab(tabId) {
 }
 
 // Format relative time
+const relativeTimeFormatter = typeof Intl !== 'undefined' && Intl.RelativeTimeFormat
+    ? new Intl.RelativeTimeFormat('en', { numeric: 'auto' })
+    : null;
+
 function formatTimeSince(dateString) {
-    const now = new Date();
+    if (!dateString) {
+        return 'Unknown';
+    }
+
     const time = new Date(dateString);
-    const diff = Math.floor((now - time) / 1000); // difference in seconds
-    
-    if (diff < 60) return `${diff} seconds ago`;
-    if (diff < 3600) return `${Math.floor(diff / 60)} minutes ago`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)} hours ago`;
-    if (diff < 2592000) return `${Math.floor(diff / 86400)} days ago`;
-    if (diff < 31536000) return `${Math.floor(diff / 2592000)} months ago`;
-    return `${Math.floor(diff / 31536000)} years ago`;
+    if (Number.isNaN(time.getTime())) {
+        return 'Unknown';
+    }
+
+    const now = new Date();
+    const diffInSeconds = Math.round((time - now) / 1000); // negative when in the past
+
+    const thresholds = [
+        { unit: 'second', value: 60 },
+        { unit: 'minute', value: 60 },
+        { unit: 'hour', value: 24 },
+        { unit: 'day', value: 7 },
+        { unit: 'week', value: 4.34524 }, // average weeks in a month
+        { unit: 'month', value: 12 },
+        { unit: 'year', value: Number.POSITIVE_INFINITY }
+    ];
+
+    let unitIndex = 0;
+    let unitDiff = diffInSeconds;
+
+    while (unitIndex < thresholds.length - 1 && Math.abs(unitDiff) >= thresholds[unitIndex].value) {
+        unitDiff /= thresholds[unitIndex].value;
+        unitIndex += 1;
+    }
+
+    const unit = thresholds[unitIndex].unit;
+
+    // If the event is in the far future/past, round to a sensible number.
+    const roundedDiff = Math.round(unitDiff);
+
+    if (roundedDiff === 0) {
+        return 'Just now';
+    }
+
+    if (relativeTimeFormatter) {
+        return relativeTimeFormatter.format(roundedDiff, unit);
+    }
+
+    const absolute = Math.abs(roundedDiff);
+    const plural = absolute === 1 ? unit : `${unit}s`;
+    return roundedDiff < 0 ? `${absolute} ${plural} ago` : `in ${absolute} ${plural}`;
 }
 
 // Load reports
@@ -1438,13 +1568,18 @@ async function loadReports(all = false) {
     try {
         const url = all ? '/api/reports?full=true' : '/api/reports';
         const response = await fetch(url);
+
+        if (!response.ok) {
+            throw new Error(describeHttpStatus(response.status));
+        }
+
         const reports = await response.json();
         
         reportsTable.innerHTML = '';
         
         if (reports.length === 0) {
             const row = document.createElement('tr');
-            row.innerHTML = `<td colspan="4" class="text-center">No reports available</td>`;
+            row.innerHTML = `<td colspan="4" class="text-center">No reports available yet</td>`;
             reportsTable.appendChild(row);
             return;
         }
@@ -1463,6 +1598,11 @@ async function loadReports(all = false) {
         });
     } catch (error) {
         console.error('Error loading reports:', error);
+        reportsTable.innerHTML = '';
+        const row = document.createElement('tr');
+        row.innerHTML = `<td colspan="4" class="text-center text-danger">Unable to load reports (${error.message}).</td>`;
+        reportsTable.appendChild(row);
+        showToast('Unable to load reports. Please try again.', 'error');
     }
 }
 
@@ -1471,7 +1611,7 @@ async function loadSettings() {
     try {
         const response = await fetch('/api/settings');
         if (!response.ok) {
-            throw new Error(`HTTP Error: ${response.status}`);
+            throw new Error(describeHttpStatus(response.status));
         }
         const settings = await response.json();
         
@@ -1525,6 +1665,7 @@ async function loadSettings() {
         console.log('Settings loaded successfully');
     } catch (error) {
         console.error('Error loading settings:', error);
+        showToast(`Unable to load settings: ${error.message}`, 'error');
     }
 }
 
@@ -1721,6 +1862,13 @@ resetSettingsBtn.addEventListener('click', async () => {
 // Helper Functions
 function capitalizeFirstLetter(string) {
     return string.charAt(0).toUpperCase() + string.slice(1);
+}
+
+function describeHttpStatus(status) {
+    if (status === 403) {
+        return 'HTTP 403 Forbidden. On macOS this often means the system AirPlay service is answering on port 5000. Open FELScanner on the port you mapped (for example http://localhost:8080).';
+    }
+    return `HTTP ${status}`;
 }
 
 function formatDateTime(dateString) {

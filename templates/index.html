@@ -14,7 +14,7 @@
 </head>
 <body>
     <div class="container">
-        <header class="hero-surface mb-5">
+        <header class="hero-surface mb-5" id="dashboard-hero">
             <div class="row align-items-center g-4">
                 <div class="col-lg-7">
                     <span class="hero-badge"><i class="fas fa-bolt"></i> Library intelligence</span>
@@ -250,27 +250,27 @@
     </section>
 
         <!-- Main Dashboard -->
-        <div id="main-dashboard" class="dashboard-shell" style="display: {% if setup_completed %}block{% else %}none{% endif %};">
+            <div id="main-dashboard" class="dashboard-shell" style="display: block;">
             <div class="card navigation-card mb-4">
                 <div class="card-body py-3 px-2 px-md-3">
                     <ul class="nav nav-pills dashboard-tabs flex-wrap" id="dashboard-tabs" role="tablist">
                         <li class="nav-item" role="presentation">
-                            <button class="nav-link active" id="home-tab" data-bs-toggle="tab" data-bs-target="#home" type="button" role="tab" aria-controls="home" aria-selected="true">
+                            <button class="nav-link active" id="home-tab" data-dashboard-tab="home" onclick="activateDashboardTab('home')" type="button" role="tab" aria-controls="home" aria-selected="true">
                                 <i class="fas fa-chart-line"></i><span>Dashboard</span>
                             </button>
                         </li>
                         <li class="nav-item" role="presentation">
-                            <button class="nav-link" id="reports-tab" data-bs-toggle="tab" data-bs-target="#reports" type="button" role="tab" aria-controls="reports" aria-selected="false">
+                            <button class="nav-link" id="reports-tab" data-dashboard-tab="reports" onclick="activateDashboardTab('reports')" type="button" role="tab" aria-controls="reports" aria-selected="false">
                                 <i class="fas fa-file-alt"></i><span>Reports</span>
                             </button>
                         </li>
                         <li class="nav-item" role="presentation">
-                            <button class="nav-link" id="iptscanner-tab" data-bs-toggle="tab" data-bs-target="#iptscanner" type="button" role="tab" aria-controls="iptscanner" aria-selected="false">
+                            <button class="nav-link" id="iptscanner-tab" data-dashboard-tab="iptscanner" onclick="activateDashboardTab('iptscanner')" type="button" role="tab" aria-controls="iptscanner" aria-selected="false">
                                 <i class="fas fa-magnet"></i><span>IPTScanner</span>
                             </button>
                         </li>
                         <li class="nav-item" role="presentation">
-                            <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings" type="button" role="tab" aria-controls="settings" aria-selected="false">
+                            <button class="nav-link" id="settings-tab" data-dashboard-tab="settings" onclick="activateDashboardTab('settings')" type="button" role="tab" aria-controls="settings" aria-selected="false">
                                 <i class="fas fa-sliders-h"></i><span>Settings</span>
                             </button>
                         </li>
@@ -792,7 +792,7 @@
         document.getElementById('main-dashboard').style.display = setupCompleted ? 'block' : 'none';
       });
     </script>
-    <script src="/static/js/main.js"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}?v={{ cache_buster }}"></script>
     
     <!-- Movie List Modal -->
     <div class="modal fade" id="movieListModal" tabindex="-1" aria-labelledby="movieListModalLabel" aria-hidden="true">

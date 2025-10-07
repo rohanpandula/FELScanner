@@ -63,6 +63,10 @@ a:hover {
     overflow: hidden;
 }
 
+.hero-surface.hero-collapsed {
+    display: none;
+}
+
 .hero-surface::after {
     content: '';
     position: absolute;

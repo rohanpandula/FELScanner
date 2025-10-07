@@ -14,6 +14,8 @@ from scanner import PlexDVScanner
 import sys
 import subprocess
 from typing import Any, Awaitable, Callable, Optional
+from urllib.parse import urlparse
+from requests import exceptions as requests_exceptions
 
 
 # Configure logging
@@ -93,6 +95,23 @@ class AppState:
 
 # Create application state
 state = AppState()
+
+
+def _validate_and_normalize_plex_url(raw_url: str) -> str:
+    """Ensure a Plex URL includes a scheme we can use."""
+    if not raw_url or not raw_url.strip():
+        raise ValueError("Plex URL is required.")
+
+    cleaned = raw_url.strip()
+    parsed = urlparse(cleaned)
+
+    if not parsed.scheme:
+        raise ValueError("Plex URL must include http:// or https:// (e.g. http://10.0.0.104:32400).")
+
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("Unsupported Plex URL scheme. Use http:// or https://.")
+
+    return cleaned
 
 
 def _begin_background_operation(status_label: str) -> None:
@@ -276,7 +295,8 @@ def save_settings():
 # Check Plex connection
 def check_plex_connection():
     try:
-        plex = PlexServer(app.config['PLEX_URL'], app.config['PLEX_TOKEN'])
+        plex_url = _validate_and_normalize_plex_url(app.config['PLEX_URL'])
+        plex = PlexServer(plex_url, app.config['PLEX_TOKEN'])
         movies_section = plex.library.section(app.config['LIBRARY_NAME'])
         movie_count = len(movies_section.all())
         
@@ -286,6 +306,22 @@ def check_plex_connection():
                 'message': f'Connected (Found {movie_count} movies)'
             }
         return True
+    except ValueError as err:
+        with state.lock:
+            state.connection_status['plex'] = {
+                'status': 'disconnected',
+                'message': f'Error: {err}'
+            }
+        return False
+    except requests_exceptions.SSLError as err:
+        hint = ("SSL certificate verification failed. If you're using a self-signed certificate or connecting by "
+                "IP address, try http:// instead of https:// or install a trusted certificate.")
+        with state.lock:
+            state.connection_status['plex'] = {
+                'status': 'disconnected',
+                'message': f'Error: {hint} ({err})'
+            }
+        return False
     except Exception as e:
         with state.lock:
             state.connection_status['plex'] = {
@@ -859,7 +895,7 @@ def _post_setup_tasks(wizard_data):
 @app.after_request
 def add_cache_headers(response):
     if request.path.startswith('/static/'):
-        response.headers['Cache-Control'] = 'public, max-age=604800'
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     return response
 
 @app.route('/')
@@ -873,7 +909,13 @@ def index():
     }
     setup_completed = app.config['SETUP_COMPLETED']
     log.info(f"Rendering index template with setup_completed={setup_completed}")
-    return render_template('index.html', initial_data=initial_data, setup_completed=setup_completed)
+    cache_buster = int(time.time())
+    return render_template(
+        'index.html',
+        initial_data=initial_data,
+        setup_completed=setup_completed,
+        cache_buster=cache_buster
+    )
 
 @app.route('/api/status')
 def api_status():
@@ -960,12 +1002,19 @@ def test_connection():
         
         if not plex_url or not plex_token or not library_name:
             return jsonify({'success': False, 'error': 'Missing required fields'})
-            
+
+        plex_url = _validate_and_normalize_plex_url(plex_url)
         plex = PlexServer(plex_url, plex_token)
         movies_section = plex.library.section(library_name)
         movie_count = len(movies_section.all())
         
         return jsonify({'success': True, 'movie_count': movie_count})
+    except ValueError as err:
+        return jsonify({'success': False, 'error': str(err)})
+    except requests_exceptions.SSLError as err:
+        hint = ("SSL certificate verification failed. If you're using a self-signed certificate or connecting by "
+                "IP address, try http:// instead of https:// or install a trusted certificate.")
+        return jsonify({'success': False, 'error': f"{hint} ({err})"})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
