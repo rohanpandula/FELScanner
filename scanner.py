@@ -282,7 +282,7 @@ class PlexDVScanner:
                 # Find video elements
                 for video in root.xpath('//Video'):
                     rating_key = video.get('ratingKey')
-                    title = video.get('title')
+                    movie_title = video.get('title')
                     
                     # Enhanced year extraction from multiple possible locations
                     # Try the main year attribute first, then specific Release year, then originallyAvailableAt
@@ -296,7 +296,7 @@ class PlexDVScanner:
                         except:
                             pass
                     
-                    if not rating_key or not title:
+                    if not rating_key or not movie_title:
                         continue
                     
                     # Enhanced file size extraction from first valid Part element
@@ -323,13 +323,13 @@ class PlexDVScanner:
                         codec = stream.get("codec", "").upper()
                         channels = stream.get("channels", "")
                         layout = stream.get("audioChannelLayout", "").replace("(", "").replace(")", "")
-                        title = stream.get("title", "").lower()
-                        
+                        audio_title = (stream.get("title", "") or "").lower()
+
                         # Detect Atmos/DTS-MA formats
                         format_tag = ""
-                        if "truehd" in codec.lower() and "atmos" in title:
+                        if "truehd" in codec.lower() and "atmos" in audio_title:
                             format_tag = "Atmos"
-                        elif codec == "DCA" and "ma" in title:
+                        elif codec == "DCA" and "ma" in audio_title:
                             format_tag = "DTS-HD MA"
                         elif codec == "AC3":
                             format_tag = f"AC3 {channels}.1" if channels else "AC3"
@@ -337,7 +337,7 @@ class PlexDVScanner:
                         audio_details.append(f"{codec} {format_tag}".strip())
                         
                     media_info = {
-                        'title': title,
+                        'title': movie_title,
                         'year': year,
                         'dv_profile': None,
                         'dv_fel': False,
@@ -381,9 +381,14 @@ class PlexDVScanner:
         
         all_movies = self.movies_section.all()
         total = len(all_movies)
-        
+
         # Create a mapping of rating keys to movie objects for later use
         movie_dict = {str(movie.ratingKey): movie for movie in all_movies}
+
+        # Initialize lookup maps for later collection verification
+        self.dv_movies_map: Dict[str, Dict] = {}
+        self.fel_p7_movies_map: Dict[str, Dict] = {}
+        self.atmos_movies_map: Dict[str, Dict] = {}
         
         # Get all rating keys for batch processing
         rating_keys = list(movie_dict.keys())
@@ -434,13 +439,16 @@ class PlexDVScanner:
                     if media_info.get('dv_profile'):
                         media_info['title'] = movie.title
                         dv_movies.append(media_info)
-                        
+                        self.dv_movies_map[str(rating_key)] = media_info
+
                         if media_info.get('dv_profile') == '7' and media_info.get('dv_fel'):
                             p7_fel_movies.append(media_info)
-                    
+                            self.fel_p7_movies_map[str(rating_key)] = media_info
+
                     if media_info.get('has_atmos'):
                         media_info['title'] = movie.title
                         atmos_movies.append(media_info)
+                        self.atmos_movies_map[str(rating_key)] = media_info
         
         log.info(f"Found {len(dv_movies)} DV movies, {len(p7_fel_movies)} are Profile 7 FEL")
         log.info(f"Found {len(atmos_movies)} TrueHD Atmos movies")
@@ -669,6 +677,49 @@ class PlexDVScanner:
         except Exception as e:
             log.error(f"Collection error: {e}")
             return 0, []
+
+    async def _get_collection(self, collection_name: str):
+        """Fetch a collection by name using a background thread to avoid blocking."""
+        if not collection_name:
+            return None
+
+        loop = asyncio.get_running_loop()
+
+        def fetch_collection():
+            for collection in self.movies_section.collections():
+                if collection.title == collection_name:
+                    return collection
+            return None
+
+        return await loop.run_in_executor(self.thread_pool, fetch_collection)
+
+    async def _remove_from_collection(self, movie, collection):
+        """Remove an item from a Plex collection safely."""
+        if not movie or not collection:
+            return
+
+        loop = asyncio.get_running_loop()
+
+        def remove():
+            try:
+                movie.removeCollection(collection.title)
+            except Exception:
+                try:
+                    collection.removeItems([movie])
+                except Exception as e:
+                    log.error(
+                        f"Failed to remove {getattr(movie, 'title', 'Unknown')} from {collection.title}: {e}"
+                    )
+
+        await loop.run_in_executor(self.thread_pool, remove)
+
+    def _get_movie_key(self, movie) -> Optional[str]:
+        """Return the rating key for a Plex media item as a string."""
+        if hasattr(movie, 'ratingKey') and movie.ratingKey is not None:
+            return str(movie.ratingKey)
+        if hasattr(movie, 'key') and movie.key is not None:
+            return str(movie.key)
+        return None
     
     async def verify_collections(self, return_removed_items=False, skip_collections=None):
         """

@@ -2192,16 +2192,8 @@ if app.config['SETUP_COMPLETED'] and app.config['AUTO_START_MODE'] == 'monitor':
 # @app.before_first_request
 # def init_iptscanner():
 
-# New initialization approach
+# Ensure the IPT scanner is ready both for direct execution and WSGI imports
 init_iptscanner()
-
-# Add this at the bottom of the file, before app.run()
-if __name__ == "__main__":
-    # Initialize IPTScanner
-    init_iptscanner()
-    
-    # Start the app
-    app.run(host='0.0.0.0', port=5000, debug=True)
 
 @app.route('/api/iptscanner/test-run', methods=['POST'])
 def test_run_iptscanner():
@@ -2249,3 +2241,8 @@ def test_run_iptscanner():
     except Exception as e:
         app.logger.error(f"Error in test_run_iptscanner: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+if __name__ == "__main__":
+    # Start the app
+    app.run(host='0.0.0.0', port=5000, debug=True)
