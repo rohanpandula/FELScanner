@@ -5,557 +5,397 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FELScanner</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
-    <style>
-        :root {
-            --bs-body-bg: #121212;
-            --bs-body-color: #e0e0e0;
-            --card-bg: #1e1e1e;
-            --card-border: #333;
-            --input-bg: #2d2d2d;
-            --input-border: #444;
-            --input-color: #e0e0e0;
-            --stat-card-bg: #242424;
-            --stat-card-hover-bg: #2a2a2a;
-            --bg-color: #f8f9fa;
-            --text-color: #212529;
-            --card-border: #dee2e6;
-            --input-border: #ced4da;
-            --input-color: #212529;
-        }
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
 
-        [data-bs-theme="dark"] {
-            --bg-color: #212529;
-            --text-color: #f8f9fa;
-            --card-bg: #2c3034;
-            --card-border: #495057;
-            --stat-card-bg: #343a40;
-            --stat-card-hover-bg: #495057;
-            --input-bg: #343a40;
-            --input-border: #495057;
-            --input-color: #e9ecef;
-        }
-
-        body {
-            padding-top: 20px;
-            padding-bottom: 40px;
-            background-color: var(--bg-color);
-            color: var(--text-color);
-            font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", "Liberation Sans", Arial, sans-serif;
-        }
-        .container {
-            max-width: 960px;
-        }
-        .setup-step {
-            display: none;
-        }
-        .setup-step:first-child {
-            display: block;
-        }
-        .dashboard-section {
-            margin-bottom: 2rem;
-        }
-        .status-badge {
-            display: inline-block;
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.25rem;
-            font-weight: bold;
-            text-transform: uppercase;
-        }
-        .status-badge.idle {
-            background-color: #2d3748;
-            color: #a0aec0;
-        }
-        .status-badge.scanning, .status-badge.verifying {
-            background-color: #1a365d;
-            color: #63b3ed;
-        }
-        .status-badge.monitoring {
-            background-color: #1c4532;
-            color: #68d391;
-        }
-        .status-badge.error {
-            background-color: #742a2a;
-            color: #fc8181;
-        }
-        .status-badge.completed {
-            background-color: #1c4532;
-            color: #68d391;
-        }
-        .form-section {
-            margin-bottom: 1.5rem;
-        }
-        .stat-card {
-            text-align: center;
-            padding: 1rem;
-            border-radius: 0.375rem;
-            background-color: var(--stat-card-bg);
-            margin-bottom: 1rem;
-            border: 1px solid var(--card-border);
-        }
-        .stat-card h1 {
-            font-size: 2.5rem;
-            font-weight: bold;
-            margin-bottom: 0.5rem;
-            color: #fff;
-        }
-        .stat-card p {
-            margin-bottom: 0;
-            color: #9ca3af;
-        }
-        .stat-card.clickable {
-            cursor: pointer;
-            position: relative;
-            overflow: hidden;
-        }
-        .stat-card.clickable:before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(255, 255, 255, 0.05);
-            opacity: 0;
-            transition: opacity 0.2s;
-        }
-        .stat-card.clickable:hover:before {
-            opacity: 1;
-        }
-        .scan-status-container {
-            border-radius: 0.375rem;
-            margin-bottom: 1rem;
-            padding: 1rem;
-            background-color: var(--card-bg);
-            border: 1px solid var(--card-border);
-        }
-        .scan-times {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 1rem;
-            font-size: 0.875rem;
-            color: #9ca3af;
-        }
-        .scan-times > div {
-            flex: 1;
-            min-width: 200px;
-        }
-        .scan-actions {
-            display: flex;
-            gap: 0.5rem;
-            margin-top: 1rem;
-        }
-        .change-item {
-            padding: 0.75rem;
-            margin-bottom: 0.5rem;
-            border-radius: 0.25rem;
-            border-left: 3px solid;
-        }
-        .change-item.added {
-            background-color: rgba(52, 211, 153, 0.1);
-            border-left-color: #34d399;
-        }
-        .change-item.removed {
-            background-color: rgba(239, 68, 68, 0.1);
-            border-left-color: #ef4444;
-        }
-        .changes-tab-content {
-            padding-top: 1rem;
-        }
-        .changes-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1rem;
-        }
-        .change-count {
-            font-size: 0.875rem;
-            color: #9ca3af;
-        }
-        .nav-link {
-            color: var(--bs-body-color);
-            opacity: 0.8;
-        }
-        .nav-link:hover,
-        .nav-link:focus {
-            color: var(--bs-body-color);
-            opacity: 1;
-        }
-        .nav-link.active {
-            color: #3182ce !important;
-            opacity: 1;
-        }
-        .card {
-            background-color: var(--card-bg);
-            border-color: var(--card-border);
-        }
-        .card-header {
-            background-color: rgba(0, 0, 0, 0.15);
-            border-bottom: 1px solid var(--card-border);
-        }
-        .stat-card {
-            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.2);
-            transition: transform 0.2s;
-            background-color: var(--stat-card-bg);
-        }
-        .stat-card:hover {
-            transform: translateY(-3px);
-            background-color: var(--stat-card-hover-bg);
-        }
-        .form-control, .input-group-text {
-            background-color: var(--input-bg);
-            border-color: var(--input-border);
-            color: var(--input-color);
-        }
-        .form-control:focus {
-            background-color: var(--input-bg);
-            color: var(--input-color);
-        }
-        .form-check-input {
-            background-color: var(--input-bg);
-            border-color: var(--input-border);
-        }
-        .table {
-            color: var(--bs-body-color);
-            border-color: var(--card-border);
-        }
-        .alert-info {
-            background-color: #1a365d;
-            color: #63b3ed;
-            border-color: #2a4365;
-        }
-        .list-group-item {
-            background-color: var(--card-bg);
-            border-color: var(--card-border);
-            color: var(--bs-body-color);
-        }
-        .form-text {
-            color: #9ca3af;
-        }
-        
-        /* Toast styling */
-        .toast {
-            background-color: var(--card-bg);
-            border: 1px solid var(--card-border);
-            color: var(--text-color);
-        }
-        .toast-header {
-            border-bottom: 1px solid var(--card-border);
-        }
-        .toast-container {
-            z-index: 1100;
-        }
-        
-        /* Sorting styles */
-        .sortable {
-            cursor: pointer;
-            position: relative;
-            padding-right: 25px; /* Add space for sort icon */
-        }
-        .sortable:hover {
-            background-color: rgba(128, 128, 128, 0.1);
-        }
-        .sortable .fa-sort {
-            position: absolute;
-            right: 8px;
-            top: 50%;
-            transform: translateY(-50%);
-            opacity: 0.4;
-        }
-        .sortable .fa-sort-up,
-        .sortable .fa-sort-down {
-            position: absolute;
-            right: 8px;
-            top: 50%;
-            transform: translateY(-50%);
-            opacity: 1;
-            color: #3182ce; /* Bright blue color for sort indicators */
-        }
-        .sortable.sort-asc .fa-sort,
-        .sortable.sort-desc .fa-sort {
-            display: none;
-        }
-        .sort-asc, .sort-desc {
-            font-weight: bold;
-            color: #3182ce;
-        }
-        /* Hide columns when needed */
-        .size-col {
-            display: table-cell;
-        }
-        .alert {
-            padding: 10px;
-            margin-bottom: 15px;
-            border-radius: 4px;
-        }
-        .loading-spinner {
-            display: inline-block;
-            width: 1rem;
-            height: 1rem;
-            margin-right: 5px;
-            border: 0.15em solid currentColor;
-            border-right-color: transparent;
-            border-radius: 50%;
-            -webkit-animation: spinner-border .75s linear infinite;
-            animation: spinner-border .75s linear infinite;
-            vertical-align: middle;
-        }
-        /* Table styling */
-        .table th.sortable {
-            cursor: pointer;
-            position: relative;
-        }
-        .table th.sortable:hover {
-            background-color: rgba(0,0,0,0.05);
-        }
-        .table th.sort-asc::after {
-            content: "▲";
-            position: absolute;
-            right: 8px;
-            color: #007bff;
-        }
-        .table th.sort-desc::after {
-            content: "▼";
-            position: absolute;
-            right: 8px;
-            color: #007bff;
-        }
-        /* Custom column widths for movie table */
-        .year-col {
-            width: 70px;
-        }
-        .dv-profile-col {
-            width: 90px;
-        }
-        .audio-col {
-            width: 150px;
-        }
-        .bitrate-col {
-            width: 90px;
-        }
-    </style>
 </head>
 <body>
     <div class="container">
-        <header class="mb-4">
-            <h1 class="text-center">FELScanner</h1>
-            <p class="text-center text-muted">Scan your Plex library for Dolby Vision and TrueHD Atmos content</p>
-        </header>
-        
-        <!-- Setup Wizard -->
-        <div id="setup-wizard" style="display: {% if setup_completed %}none{% else %}block{% endif %};">
-            <div class="card">
-                <div class="card-header">
-                    <h5>Setup Wizard</h5>
+        <header class="hero-surface mb-5">
+            <div class="row align-items-center g-4">
+                <div class="col-lg-7">
+                    <span class="hero-badge"><i class="fas fa-bolt"></i> Library intelligence</span>
+                    <h1 class="hero-title">FELScanner Control Center</h1>
+                    <p class="hero-subtitle">Orchestrate Dolby Vision, Profile 7 FEL, and TrueHD Atmos workflows from a single beautiful command center.</p>
+                    <div class="hero-actions d-flex flex-wrap gap-3">
+                        <a class="btn btn-primary btn-lg px-4" href="#setup-anchor">Start guided setup</a>
+                        <a class="btn btn-outline-light btn-lg px-4" href="#main-dashboard">Jump to dashboard</a>
+                    </div>
+                    <p class="hero-footnote text-muted mt-4 mb-0">Need help later? Our onboarding buddy keeps contextual tips at your fingertips.</p>
+                    <div class="hero-metric-grid row g-3 mt-4" role="group" aria-label="Library snapshot">
+                        <div class="col-sm-4">
+                            <div class="hero-metric-card">
+                                <div class="hero-metric-icon"><i class="fas fa-database"></i></div>
+                                <div>
+                                    <p class="hero-metric-label">Titles indexed</p>
+                                    <p class="hero-metric-value" id="hero-total-metric" aria-live="polite">0</p>
+                                    <p class="hero-metric-caption">Movies tracked across Plex</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-sm-4">
+                            <div class="hero-metric-card accent">
+                                <div class="hero-metric-icon"><i class="fas fa-mountain"></i></div>
+                                <div>
+                                    <p class="hero-metric-label">High-fidelity stack</p>
+                                    <div class="hero-metric-pills" aria-live="polite">
+                                        <span class="metric-pill" id="hero-dv-pill"><span class="metric-pill-label">DV</span><span class="metric-pill-value" id="hero-dv-metric">0</span></span>
+                                        <span class="metric-pill" id="hero-p7-pill"><span class="metric-pill-label">P7 FEL</span><span class="metric-pill-value" id="hero-p7-metric">0</span></span>
+                                        <span class="metric-pill" id="hero-atmos-pill"><span class="metric-pill-label">Atmos</span><span class="metric-pill-value" id="hero-atmos-metric">0</span></span>
+                                    </div>
+                                    <p class="hero-metric-caption">Live counts for premium formats</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-sm-4">
+                            <div class="hero-metric-card status" aria-live="polite">
+                                <div class="hero-metric-icon"><i class="fas fa-satellite-dish"></i></div>
+                                <div class="hero-status-copy">
+                                    <p class="hero-metric-label">Automation</p>
+                                    <span id="hero-monitor-status" class="hero-status-chip idle" aria-live="polite">Idle</span>
+                                    <p class="hero-metric-caption mb-1" id="hero-monitor-caption">Waiting for the first scan</p>
+                                    <p class="hero-metric-subtle" id="hero-monitor-subcaption">No schedule yet</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <div class="card-body">
-                    <!-- Step 1: Plex Connection -->
-                    <div class="setup-step">
-                        <h4>Step 1: Plex Connection</h4>
-                        <p>Enter your Plex server details to connect to your library.</p>
-                        
-                        <div class="mb-3">
-                            <label for="plex-url" class="form-label">Plex URL</label>
-                            <input type="text" class="form-control" id="plex-url" placeholder="http://localhost:32400">
-                            <div class="form-text">The URL to your Plex server, including port (usually 32400)</div>
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="plex-token" class="form-label">Plex Token</label>
-                            <input type="text" class="form-control" id="plex-token" placeholder="Your Plex authentication token">
-                            <div class="form-text">Your Plex authentication token <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank">How to find your token</a></div>
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="library-name" class="form-label">Movie Library Name</label>
-                            <input type="text" class="form-control" id="library-name" placeholder="Movies">
-                            <div class="form-text">The exact name of your movie library in Plex</div>
-                        </div>
-                        
-                        <div class="alert alert-success" id="plex-success" style="display: none;"></div>
-                        <div class="alert alert-danger" id="plex-error" style="display: none;"></div>
-                        
-                        <div class="mt-3">
-                            <button type="button" class="btn btn-primary" id="test-plex-btn">Test Connection</button>
-                            <button type="button" class="btn btn-success next-step" style="display: none;">Next</button>
-                        </div>
-                    </div>
-                    
-                    <!-- Step 2: Collection Settings -->
-                    <div class="setup-step">
-                        <h4>Step 2: Collection Settings</h4>
-                        <p>Configure the collection names for different content types.</p>
-                        
-                        <div class="mb-3">
-                            <label for="collection-dv" class="form-label">Dolby Vision Collection</label>
-                            <input type="text" class="form-control" id="collection-dv" value="All Dolby Vision">
-                            <div class="form-text">Name for the collection containing all Dolby Vision content</div>
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="collection-p7" class="form-label">Profile 7 FEL Collection</label>
-                            <input type="text" class="form-control" id="collection-p7" value="DV FEL Profile 7">
-                            <div class="form-text">Name for the collection containing Profile 7 FEL content</div>
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="collection-atmos" class="form-label">TrueHD Atmos Collection</label>
-                            <input type="text" class="form-control" id="collection-atmos" value="TrueHD Atmos">
-                            <div class="form-text">Name for the collection containing TrueHD Atmos audio</div>
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="reports-size" class="form-label">Maximum Report Storage (MB)</label>
-                            <input type="number" class="form-control" id="reports-size" value="5" min="1">
-                            <div class="form-text">Maximum disk space to use for storing reports (in MB)</div>
-                        </div>
-                        
-                        <div class="mt-3">
-                            <button type="button" class="btn btn-secondary prev-step">Previous</button>
-                            <button type="button" class="btn btn-success next-step">Next</button>
-                        </div>
-                    </div>
-                    
-                    <!-- Step 3: Notifications -->
-                    <div class="setup-step">
-                        <h4>Step 3: Notifications (Optional)</h4>
-                        <p>Configure Telegram notifications for updates.</p>
-                        
-                        <div class="form-check mb-3">
-                            <input class="form-check-input" type="checkbox" id="telegram-enabled">
-                            <label class="form-check-label" for="telegram-enabled">
-                                Enable Telegram notifications
-                            </label>
-                        </div>
-                        
-                        <div id="telegram-settings" style="display: none;">
-                            <div class="mb-3">
-                                <label for="telegram-token" class="form-label">Bot Token</label>
-                                <input type="text" class="form-control" id="telegram-token">
-                                <div class="form-text">Your Telegram bot token from BotFather</div>
-                            </div>
-                            
-                            <div class="mb-3">
-                                <label for="telegram-chat-id" class="form-label">Chat ID</label>
-                                <input type="text" class="form-control" id="telegram-chat-id">
-                                <div class="form-text">Your Telegram chat ID or group ID</div>
-                            </div>
-                            
-                            <div class="alert alert-success" id="telegram-success" style="display: none;"></div>
-                            <div class="alert alert-danger" id="telegram-error" style="display: none;"></div>
-                            
-                            <div class="mb-3">
-                                <button type="button" class="btn btn-primary" id="test-telegram-btn">Test Telegram</button>
-                            </div>
-                        </div>
-                        
-                        <div class="mt-3">
-                            <button type="button" class="btn btn-secondary prev-step">Previous</button>
-                            <button type="button" class="btn btn-success next-step">Complete Setup</button>
+                <div class="col-lg-5">
+                    <div class="hero-summary card h-100 position-relative overflow-hidden">
+                        <div class="card-body">
+                            <h5 class="text-uppercase small fw-semibold text-secondary mb-3">Your onboarding playbook</h5>
+                            <ul class="hero-checklist list-unstyled mb-0">
+                                <li><i class="fas fa-check-circle"></i><span>Connect securely to Plex</span></li>
+                                <li><i class="fas fa-check-circle"></i><span>Curate Dolby Vision collections</span></li>
+                                <li><i class="fas fa-check-circle"></i><span>Automate IPTorrents monitoring</span></li>
+                            </ul>
                         </div>
                     </div>
                 </div>
             </div>
+        </header>
+
+        <!-- Setup Wizard -->
+        <section id="setup-anchor" class="mb-5">
+        <div id="setup-wizard" class="wizard-shell" style="display: {% if setup_completed %}none{% else %}block{% endif %};">
+            <div class="row g-4 align-items-start">
+                <div class="col-lg-8">
+                    <div class="card wizard-card h-100">
+                        <div class="card-body">
+                            <div class="wizard-header d-flex flex-column flex-lg-row align-items-lg-center justify-content-lg-between gap-3">
+                                <div>
+                                    <span class="wizard-kicker">Guided onboarding</span>
+                                    <h3 class="wizard-title">Let's prepare your library</h3>
+                                    <p class="wizard-subtitle mb-0">FELScanner will connect to Plex, organize collections, and configure notifications in just a few steps.</p>
+                                </div>
+                            </div>
+                            <div class="setup-progress">
+                                <div class="setup-progress-track"></div>
+                                <div class="setup-progress-fill" id="setup-progress-fill"></div>
+                                <div class="setup-progress-steps">
+                                    <button type="button" class="setup-progress-step active" data-step-index="0">
+                                        <span class="step-circle"><i class="fas fa-plug"></i></span>
+                                        <span class="step-label">Connect</span>
+                                        <span class="step-caption">Server access</span>
+                                    </button>
+                                    <button type="button" class="setup-progress-step" data-step-index="1">
+                                        <span class="step-circle"><i class="fas fa-layer-group"></i></span>
+                                        <span class="step-label">Collections</span>
+                                        <span class="step-caption">Naming &amp; reports</span>
+                                    </button>
+                                    <button type="button" class="setup-progress-step" data-step-index="2">
+                                        <span class="step-circle"><i class="fas fa-bell"></i></span>
+                                        <span class="step-label">Notifications</span>
+                                        <span class="step-caption">Optional alerts</span>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="setup-steps">
+                                <div class="setup-step active" data-step-index="0" data-step-key="connect">
+                                    <div class="step-header">
+                                        <div class="step-icon"><i class="fas fa-plug"></i></div>
+                                        <div>
+                                            <h4 class="step-title">Step 1 — Plex connection</h4>
+                                            <p class="step-description">Enter your Plex server details to connect to your library.</p>
+                                        </div>
+                                    </div>
+
+                                    <div class="mb-3">
+                                        <label for="plex-url" class="form-label">Plex URL</label>
+                                        <input type="text" class="form-control" id="plex-url" placeholder="http://localhost:32400">
+                                        <div class="form-text">The URL to your Plex server, including port (usually 32400)</div>
+                                    </div>
+
+                                    <div class="mb-3">
+                                        <label for="plex-token" class="form-label">Plex Token</label>
+                                        <input type="text" class="form-control" id="plex-token" placeholder="Your Plex authentication token">
+                                        <div class="form-text">Your Plex authentication token <a href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/" target="_blank">How to find your token</a></div>
+                                    </div>
+
+                                    <div class="mb-3">
+                                        <label for="library-name" class="form-label">Movie Library Name</label>
+                                        <input type="text" class="form-control" id="library-name" placeholder="Movies">
+                                        <div class="form-text">The exact name of your movie library in Plex</div>
+                                    </div>
+
+                                    <div class="alert alert-success" id="plex-success" style="display: none;"></div>
+                                    <div class="alert alert-danger" id="plex-error" style="display: none;"></div>
+
+                                    <div class="d-flex flex-wrap gap-2 mt-3">
+                                        <button type="button" class="btn btn-primary" id="test-plex-btn">Test connection</button>
+                                        <button type="button" class="btn btn-success next-step" style="display: none;">Continue</button>
+                                    </div>
+                                </div>
+
+                                <div class="setup-step" data-step-index="1" data-step-key="collections">
+                                    <div class="step-header">
+                                        <div class="step-icon"><i class="fas fa-layer-group"></i></div>
+                                        <div>
+                                            <h4 class="step-title">Step 2 — Collection preferences</h4>
+                                            <p class="step-description">Configure how FELScanner curates your Dolby Vision, Profile 7 FEL, and Atmos collections.</p>
+                                        </div>
+                                    </div>
+
+                                    <div class="mb-3">
+                                        <label for="collection-dv" class="form-label">Dolby Vision collection</label>
+                                        <input type="text" class="form-control" id="collection-dv" value="All Dolby Vision">
+                                        <div class="form-text">Name for the collection containing all Dolby Vision content</div>
+                                    </div>
+
+                                    <div class="mb-3">
+                                        <label for="collection-p7" class="form-label">Profile 7 FEL collection</label>
+                                        <input type="text" class="form-control" id="collection-p7" value="DV FEL Profile 7">
+                                        <div class="form-text">Name for the collection containing Profile 7 FEL content</div>
+                                    </div>
+
+                                    <div class="mb-3">
+                                        <label for="collection-atmos" class="form-label">TrueHD Atmos collection</label>
+                                        <input type="text" class="form-control" id="collection-atmos" value="TrueHD Atmos">
+                                        <div class="form-text">Name for the collection containing TrueHD Atmos audio</div>
+                                    </div>
+
+                                    <div class="mb-3">
+                                        <label for="reports-size" class="form-label">Maximum report storage (MB)</label>
+                                        <input type="number" class="form-control" id="reports-size" value="5" min="1">
+                                        <div class="form-text">Maximum disk space to use for storing reports (in MB)</div>
+                                    </div>
+
+                                    <div class="d-flex flex-wrap gap-2 mt-3">
+                                        <button type="button" class="btn btn-secondary prev-step">Back</button>
+                                        <button type="button" class="btn btn-success next-step">Continue</button>
+                                    </div>
+                                </div>
+
+                                <div class="setup-step" data-step-index="2" data-step-key="notifications">
+                                    <div class="step-header">
+                                        <div class="step-icon"><i class="fas fa-bell"></i></div>
+                                        <div>
+                                            <h4 class="step-title">Step 3 — Notifications (optional)</h4>
+                                            <p class="step-description">Configure Telegram notifications for library updates.</p>
+                                        </div>
+                                    </div>
+
+                                    <div class="form-check mb-3">
+                                        <input class="form-check-input" type="checkbox" id="telegram-enabled">
+                                        <label class="form-check-label" for="telegram-enabled">Enable Telegram notifications</label>
+                                    </div>
+
+                                    <div id="telegram-settings" style="display: none;">
+                                        <div class="mb-3">
+                                            <label for="telegram-token" class="form-label">Bot token</label>
+                                            <input type="text" class="form-control" id="telegram-token">
+                                            <div class="form-text">Your Telegram bot token from BotFather</div>
+                                        </div>
+
+                                        <div class="mb-3">
+                                            <label for="telegram-chat-id" class="form-label">Chat ID</label>
+                                            <input type="text" class="form-control" id="telegram-chat-id">
+                                            <div class="form-text">Your Telegram chat ID or group ID</div>
+                                        </div>
+
+                                        <div class="alert alert-success" id="telegram-success" style="display: none;"></div>
+                                        <div class="alert alert-danger" id="telegram-error" style="display: none;"></div>
+
+                                        <div class="mb-3">
+                                            <button type="button" class="btn btn-primary" id="test-telegram-btn">Test Telegram</button>
+                                        </div>
+                                    </div>
+
+                                    <div class="d-flex flex-wrap gap-2 mt-3">
+                                        <button type="button" class="btn btn-secondary prev-step">Back</button>
+                                        <button type="button" class="btn btn-success next-step">Complete setup</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-lg-4">
+                    <aside class="onboarding-buddy h-100" id="onboarding-buddy">
+                        <div class="buddy-emoji" id="buddy-emoji">👋</div>
+                        <h4 class="buddy-title" id="buddy-title">Welcome!</h4>
+                        <p class="buddy-message" id="buddy-message">Let's connect to Plex to get started.</p>
+                        <ul class="buddy-checklist" id="buddy-checklist"></ul>
+                        <div class="buddy-footer">
+                            <i class="fas fa-lightbulb me-2"></i>
+                            <span id="buddy-footer-text">I'll keep track of progress and surface helpful reminders.</span>
+                        </div>
+                    </aside>
+                </div>
+            </div>
         </div>
-        
+    </section>
+
         <!-- Main Dashboard -->
-        <div id="main-dashboard" style="display: {% if setup_completed %}block{% else %}none{% endif %};">
-            <ul class="nav nav-tabs mb-4" id="dashboard-tabs" role="tablist">
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link active" id="home-tab" data-bs-toggle="tab" data-bs-target="#home" type="button" role="tab" aria-controls="home" aria-selected="true">Dashboard</button>
-                </li>
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="reports-tab" data-bs-toggle="tab" data-bs-target="#reports" type="button" role="tab" aria-controls="reports" aria-selected="false">Reports</button>
-                </li>
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="iptscanner-tab" data-bs-toggle="tab" data-bs-target="#iptscanner" type="button" role="tab" aria-controls="iptscanner" aria-selected="false">IPTScanner</button>
-                </li>
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings" type="button" role="tab" aria-controls="settings" aria-selected="false">Settings</button>
-                </li>
-            </ul>
-            
+        <div id="main-dashboard" class="dashboard-shell" style="display: {% if setup_completed %}block{% else %}none{% endif %};">
+            <div class="card navigation-card mb-4">
+                <div class="card-body py-3 px-2 px-md-3">
+                    <ul class="nav nav-pills dashboard-tabs flex-wrap" id="dashboard-tabs" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active" id="home-tab" data-bs-toggle="tab" data-bs-target="#home" type="button" role="tab" aria-controls="home" aria-selected="true">
+                                <i class="fas fa-chart-line"></i><span>Dashboard</span>
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="reports-tab" data-bs-toggle="tab" data-bs-target="#reports" type="button" role="tab" aria-controls="reports" aria-selected="false">
+                                <i class="fas fa-file-alt"></i><span>Reports</span>
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="iptscanner-tab" data-bs-toggle="tab" data-bs-target="#iptscanner" type="button" role="tab" aria-controls="iptscanner" aria-selected="false">
+                                <i class="fas fa-magnet"></i><span>IPTScanner</span>
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings" type="button" role="tab" aria-controls="settings" aria-selected="false">
+                                <i class="fas fa-sliders-h"></i><span>Settings</span>
+                            </button>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+
             <div class="tab-content">
                 <!-- Home Tab -->
                 <div class="tab-pane fade show active" id="home" role="tabpanel" aria-labelledby="home-tab">
                     <!-- Status Section -->
                     <div class="dashboard-section">
-                        <h4>Status</h4>
-                        <div class="card">
+                        <div class="section-heading d-flex flex-column flex-md-row align-items-md-center justify-content-md-between mb-3">
+                            <div>
+                                <h4 class="section-title mb-1">Status</h4>
+                                <p class="section-subtitle mb-0 text-muted">Track scans, automation, and library health at a glance.</p>
+                            </div>
+                            <div class="status-meta-small d-none d-md-flex align-items-center gap-3">
+                                <span class="small text-muted"><i class="fas fa-history me-2"></i>Last scan <span id="last-scan-time">Never</span></span>
+                                <span class="small text-muted" id="next-scan-container" style="display: none;"><i class="fas fa-clock me-2"></i>Next scan <span id="next-scan-time">Unknown</span></span>
+                            </div>
+                        </div>
+                        <div class="card status-card">
                             <div class="card-body">
-                                <div class="row">
-                                    <div class="col-md-6">
-                                        <p>Current Status: <span id="status-badge" class="status-badge idle">Idle</span></p>
-                                        <p>Last Scan: <span id="last-scan-time">Never</span></p>
-                                        <div id="next-scan-container" style="display: none;">
-                                            <p>Next Scan: <span id="next-scan-time">Unknown</span></p>
+                                <div class="row g-4 align-items-center">
+                                    <div class="col-lg-7">
+                                        <div class="status-overview">
+                                            <span class="status-label text-uppercase small fw-semibold text-muted">Current status</span>
+                                            <div class="d-flex align-items-center gap-3 mt-3">
+                                                <span id="status-badge" class="status-badge idle">Idle</span>
+                                                <div class="status-times d-flex flex-column gap-2 d-lg-none">
+                                                    <span class="text-muted small"><i class="fas fa-history me-2"></i>Last scan <span id="last-scan-time-mobile">Never</span></span>
+                                                    <span class="text-muted small" id="next-scan-container-mobile" style="display: none;"><i class="fas fa-clock me-2"></i>Next scan <span id="next-scan-time-mobile">Unknown</span></span>
+                                                </div>
+                                            </div>
+                                            <p class="status-description text-muted mt-3 mb-0">Launch a manual scan, verify collections, or toggle monitoring right from here.</p>
                                         </div>
                                     </div>
-                                    <div class="col-md-6 text-end">
-                                        <div class="d-grid gap-2 d-md-flex justify-content-md-end action-buttons">
-                                            <button id="start-scan-btn" class="btn btn-primary me-md-2 mb-2">Start Scan</button>
-                                            <button id="verify-collections-btn" class="btn btn-secondary me-md-2 mb-2">Verify Collections</button>
-                                            <button id="start-monitor-btn" class="btn btn-success mb-2">Start Monitor</button>
-                                            <button id="stop-monitor-btn" class="btn btn-danger mb-2" style="display: none;">Stop Monitor</button>
+                                    <div class="col-lg-5">
+                                        <div class="action-panel d-flex flex-wrap gap-2 justify-content-lg-end">
+                                            <button id="start-scan-btn" class="btn btn-primary">Start Scan</button>
+                                            <button id="verify-collections-btn" class="btn btn-secondary">Verify Collections</button>
+                                            <button id="start-monitor-btn" class="btn btn-success">Start Monitor</button>
+                                            <button id="stop-monitor-btn" class="btn btn-danger" style="display: none;">Stop Monitor</button>
                                         </div>
                                     </div>
                                 </div>
-                                
-                                <div id="scan-progress-container" class="progress-container" style="display: none;">
+                                <div id="scan-progress-container" class="progress-container mt-4" style="display: none;">
                                     <div class="progress">
                                         <div id="scan-progress" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
                                     </div>
+                                    <p class="progress-hint text-muted small mt-2 mb-0"><i class="fas fa-info-circle me-2"></i>Real-time updates arrive every few seconds.</p>
                                 </div>
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- Statistics Section -->
                     <div class="dashboard-section">
-                        <h4>Statistics</h4>
-                        <div class="row">
-                            <div class="col-md-3">
+                        <div class="section-heading d-flex flex-column flex-md-row align-items-md-center justify-content-md-between mb-3">
+                            <div>
+                                <h4 class="section-title mb-1">Library composition</h4>
+                                <p class="section-subtitle mb-0 text-muted">Tap a card to explore the titles that power each metric.</p>
+                            </div>
+                        </div>
+                        <div class="row g-3 g-lg-4">
+                            <div class="col-12 col-sm-6 col-lg-3">
                                 <div class="stat-card">
-                                    <h1 id="total-movies">0</h1>
-                                    <p>Total Movies</p>
+                                    <div class="stat-card-icon"><i class="fas fa-film"></i></div>
+                                    <div class="stat-card-metric">
+                                        <h1 id="total-movies">0</h1>
+                                        <p>Total Movies</p>
+                                    </div>
                                 </div>
                             </div>
-                            <div class="col-md-3">
+                            <div class="col-12 col-sm-6 col-lg-3">
                                 <div class="stat-card clickable" data-collection="dv">
-                                    <h1 id="dv-movies">0</h1>
-                                    <p>Dolby Vision</p>
+                                    <div class="stat-card-icon accent"><i class="fas fa-bolt"></i></div>
+                                    <div class="stat-card-metric">
+                                        <h1 id="dv-movies">0</h1>
+                                        <p>Dolby Vision</p>
+                                    </div>
                                 </div>
                             </div>
-                            <div class="col-md-3">
+                            <div class="col-12 col-sm-6 col-lg-3">
                                 <div class="stat-card clickable" data-collection="p7">
-                                    <h1 id="p7-movies">0</h1>
-                                    <p>Profile 7 FEL</p>
+                                    <div class="stat-card-icon accent"><i class="fas fa-layer-group"></i></div>
+                                    <div class="stat-card-metric">
+                                        <h1 id="p7-movies">0</h1>
+                                        <p>Profile 7 FEL</p>
+                                    </div>
                                 </div>
                             </div>
-                            <div class="col-md-3">
+                            <div class="col-12 col-sm-6 col-lg-3">
                                 <div class="stat-card clickable" data-collection="atmos">
-                                    <h1 id="atmos-movies">0</h1>
-                                    <p>TrueHD Atmos</p>
+                                    <div class="stat-card-icon accent"><i class="fas fa-headphones"></i></div>
+                                    <div class="stat-card-metric">
+                                        <h1 id="atmos-movies">0</h1>
+                                        <p>TrueHD Atmos</p>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- Collection Changes Section -->
                     <div class="dashboard-section">
-                        <h4>Collection Changes</h4>
-                        <div id="no-changes-alert" class="alert alert-info">
-                            <i class="fas fa-info-circle"></i> No recent changes to collections. 
-                            <small>This means all movies are already properly categorized in their respective collections.</small>
+                        <div class="section-heading d-flex flex-column flex-md-row align-items-md-center justify-content-md-between mb-3">
+                            <div>
+                                <h4 class="section-title mb-1">Collection changes</h4>
+                                <p class="section-subtitle mb-0 text-muted">Monitor which titles moved in or out of your Dolby Vision, Profile 7, and Atmos collections.</p>
+                            </div>
                         </div>
-                        
-                        <div id="changes-container" class="mt-4" style="display: none;">
+                        <div id="no-changes-alert" class="empty-state">
+                            <div class="empty-state-icon"><i class="fas fa-check-circle"></i></div>
+                            <div>
+                                <h5 class="mb-1">Everything is in harmony</h5>
+                                <p class="text-muted mb-0">No recent additions or removals were detected. Your collections match the latest scan.</p>
+                            </div>
+                        </div>
+
+                        <div id="changes-container" class="changes-panel mt-4" style="display: none;">
                             <div class="card">
-                                <div class="card-header">
-                                    <h5>Collection Changes</h5>
-                                </div>
                                 <div class="card-body">
-                                    <div id="collection-tabs" class="nav nav-tabs mb-3">
+                                    <div id="collection-tabs" class="nav nav-pills mb-3">
                                         <!-- Tabs will be inserted here by JavaScript -->
                                     </div>
                                     <div id="collection-contents">
@@ -565,55 +405,62 @@
                             </div>
                         </div>
                     </div>
-                </div>
-                
+
                 <!-- Reports Tab -->
                 <div class="tab-pane fade" id="reports" role="tabpanel" aria-labelledby="reports-tab">
-                    <h4>Scan Reports</h4>
-                    <div class="card">
-                        <div class="card-body">
-                            <div class="table-responsive">
-                                <table class="table table-striped">
-                                    <thead>
-                                        <tr>
-                                            <th>Date</th>
-                                            <th>Filename</th>
-                                            <th>Size</th>
-                                            <th>Actions</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="reports-table">
-                                        <tr>
-                                            <td colspan="4" class="text-center">Loading reports...</td>
-                                        </tr>
-                                    </tbody>
-                                </table>
+                    <div class="dashboard-section">
+                        <div class="section-heading d-flex flex-column flex-md-row align-items-md-center justify-content-md-between mb-3">
+                            <div>
+                                <h4 class="section-title mb-1">Scan reports</h4>
+                                <p class="section-subtitle mb-0 text-muted">Download or review your recent FELScanner exports.</p>
                             </div>
                             <button id="view-all-reports" class="btn btn-outline-primary">View All Reports</button>
                         </div>
-                    </div>
-                </div>
-                
-                <!-- IPTScanner Tab -->
-                <div class="tab-pane fade" id="iptscanner" role="tabpanel" aria-labelledby="iptscanner-tab">
-                    <h4>IPTorrents Monitor</h4>
-                    
-                    <div class="dashboard-section">
                         <div class="card">
-                            <div class="card-header d-flex justify-content-between align-items-center">
-                                <h5 class="mb-0">Torrent Finder</h5>
-                                <div>
-                                    <button id="iptscanner-refresh" class="btn btn-primary btn-sm">
-                                        <i class="fas fa-sync-alt"></i> Refresh
-                                    </button>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-striped">
+                                        <thead>
+                                            <tr>
+                                                <th>Date</th>
+                                                <th>Filename</th>
+                                                <th>Size</th>
+                                                <th>Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="reports-table">
+                                            <tr>
+                                                <td colspan="4" class="text-center">Loading reports...</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
                                 </div>
                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- IPTScanner Tab -->
+                <div class="tab-pane fade" id="iptscanner" role="tabpanel" aria-labelledby="iptscanner-tab">
+                    <div class="dashboard-section">
+                        <div class="section-heading d-flex flex-column flex-md-row align-items-md-center justify-content-md-between mb-3">
+                            <div>
+                                <h4 class="section-title mb-1">IPTorrents monitor</h4>
+                                <p class="section-subtitle mb-0 text-muted">Review the latest searches and automate torrent discovery.</p>
+                            </div>
+                            <div class="d-flex gap-2">
+                                <button id="iptscanner-refresh" class="btn btn-primary btn-sm">
+                                    <i class="fas fa-sync-alt"></i> Refresh
+                                </button>
+                            </div>
+                        </div>
+                        <div class="card">
                             <div class="card-body">
-                                <div class="row mb-3">
+                                <div class="row g-3 mb-3">
                                     <div class="col-md-4">
                                         <div class="card bg-dark">
                                             <div class="card-body">
-                                                <h6>Search Term</h6>
+                                                <h6>Search term</h6>
                                                 <p id="ipt-search-term" class="mb-0 text-info">Loading...</p>
                                             </div>
                                         </div>
@@ -621,7 +468,7 @@
                                     <div class="col-md-4">
                                         <div class="card bg-dark">
                                             <div class="card-body">
-                                                <h6>Last Check</h6>
+                                                <h6>Last check</h6>
                                                 <p id="ipt-last-check" class="mb-0 text-info">Loading...</p>
                                             </div>
                                         </div>
@@ -642,7 +489,7 @@
                                         </div>
                                     </div>
                                 </div>
-                                
+
                                 <div class="table-responsive">
                                     <table class="table table-hover">
                                         <thead>
@@ -662,16 +509,21 @@
                                         </tbody>
                                     </table>
                                 </div>
-                                
-                                <div id="ipt-no-torrents" class="alert alert-info" style="display:none;">
+
+                                <div id="ipt-no-torrents" class="alert alert-info mt-3" style="display:none;">
                                     <i class="fas fa-info-circle"></i> No torrents found matching your search criteria.
                                 </div>
                             </div>
                         </div>
                     </div>
-                    
+
                     <div class="dashboard-section">
-                        <h5>Activity Log</h5>
+                        <div class="section-heading mb-3">
+                            <div>
+                                <h5 class="section-title mb-1">Activity log</h5>
+                                <p class="section-subtitle mb-0 text-muted">Inspect recent IPT scanner actions and status updates.</p>
+                            </div>
+                        </div>
                         <div class="card">
                             <div class="card-body">
                                 <div id="ipt-log" class="bg-dark p-3 rounded" style="max-height: 200px; overflow-y: auto;">
@@ -681,7 +533,7 @@
                         </div>
                     </div>
                 </div>
-                
+
                 <!-- Settings Tab -->
                 <div class="tab-pane fade" id="settings" role="tabpanel" aria-labelledby="settings-tab">
                     <h4>Settings</h4>
