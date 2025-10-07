@@ -13,6 +13,8 @@ from plexapi.server import PlexServer
 from scanner import PlexDVScanner
 import sys
 import subprocess
+from typing import Any, Awaitable, Callable, Optional
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(message)s', datefmt='%H:%M:%S')
@@ -91,6 +93,54 @@ class AppState:
 
 # Create application state
 state = AppState()
+
+
+def _begin_background_operation(status_label: str) -> None:
+    """Mark the application as busy with a background scan/verify."""
+    with state.lock:
+        state.is_scanning = True
+        state.scan_results['status'] = status_label
+        state.scan_results['scan_progress'] = 0
+        state.last_collection_changes = {
+            'added': [],
+            'removed': [],
+            'added_items': [],
+            'removed_items': []
+        }
+
+
+def _finalize_background_operation(status_label: str) -> None:
+    """Release scan locks and normalise status if nothing updated it."""
+    with state.lock:
+        state.is_scanning = False
+        if state.scan_results.get('status') == status_label:
+            state.scan_results['status'] = 'idle'
+
+
+def _run_background_coroutine(
+    coroutine_factory: Callable[[], Awaitable[Any]],
+    status_label: str
+) -> Optional[Any]:
+    """Utility to execute an async workflow inside a worker thread safely."""
+    _begin_background_operation(status_label)
+    loop = None
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coroutine_factory())
+    except Exception as exc:
+        log.error(f"Error during {status_label}: {exc}")
+        with state.lock:
+            state.scan_results['status'] = f"error: {str(exc)}"
+    finally:
+        try:
+            if loop is not None and not loop.is_closed():
+                loop.close()
+        except Exception as close_error:
+            log.debug(f"Error closing event loop for {status_label}: {close_error}")
+        finally:
+            asyncio.set_event_loop(None)
+            _finalize_background_operation(status_label)
 
 # Load settings from file
 def load_settings():
@@ -411,64 +461,13 @@ def initialize_scanner():
 # Run scan in a thread with its own event loop
 def run_scan_thread():
     """Run a scan in a new thread with its own event loop"""
-    with state.lock:
-        # Preserve last_scan_time while we scan
-        # Store scan status and reset progress
-        state.is_scanning = True
-        state.scan_results['status'] = 'scanning'
-        state.scan_results['scan_progress'] = 0
-        
-        # Reset collection changes but keep added/removed structure
-        state.last_collection_changes = {'added_items': [], 'removed_items': []}
-    
-    try:
-        # Create a new event loop for this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        # Run the async scan function in this loop
-        log_entries = loop.run_until_complete(async_run_scan())
-        
-        # Close the loop when done
-        loop.close()
-    except Exception as e:
-        log.error(f"Error in scan thread: {e}")
-        with state.lock:
-            state.scan_results['status'] = f"error: {str(e)}"
-    finally:
-        with state.lock:
-            state.is_scanning = False
+    _run_background_coroutine(async_run_scan, 'scanning')
+
 
 # Run verify in a thread with its own event loop
 def run_verify_thread():
     """Run a verify operation in a new thread with its own event loop"""
-    with state.lock:
-        # Preserve last_scan_time while we verify
-        # Store scan status and reset progress
-        state.is_scanning = True
-        state.scan_results['status'] = 'verifying'
-        state.scan_results['scan_progress'] = 0
-        
-        # Reset collection changes but keep added/removed structure
-        state.last_collection_changes = {'added_items': [], 'removed_items': []}
-    
-    try:
-        # Create a new event loop for this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        # Run the async verify function in this loop
-        log_entries = loop.run_until_complete(async_run_verify())
-        
-        # Close the loop when done
-        loop.close()
-    except Exception as e:
-        log.error(f"Error in verify thread: {e}")
-        with state.lock:
-            state.scan_results['status'] = f"error: {str(e)}"
-    finally:
-        with state.lock:
-            state.is_scanning = False
+    _run_background_coroutine(async_run_verify, 'verifying')
 
 # Run full scan (async implementation)
 async def async_run_scan():
@@ -2192,16 +2191,8 @@ if app.config['SETUP_COMPLETED'] and app.config['AUTO_START_MODE'] == 'monitor':
 # @app.before_first_request
 # def init_iptscanner():
 
-# New initialization approach
+# Ensure the IPT scanner is ready both for direct execution and WSGI imports
 init_iptscanner()
-
-# Add this at the bottom of the file, before app.run()
-if __name__ == "__main__":
-    # Initialize IPTScanner
-    init_iptscanner()
-    
-    # Start the app
-    app.run(host='0.0.0.0', port=5000, debug=True)
 
 @app.route('/api/iptscanner/test-run', methods=['POST'])
 def test_run_iptscanner():
@@ -2249,3 +2240,8 @@ def test_run_iptscanner():
     except Exception as e:
         app.logger.error(f"Error in test_run_iptscanner: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+if __name__ == "__main__":
+    # Start the app
+    app.run(host='0.0.0.0', port=5000, debug=True)

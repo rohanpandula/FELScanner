@@ -150,14 +150,40 @@ const navigateToPage = async (page, url, desc) => {
   }
 };
 
-const generateTorrentId = t => crypto.createHash("md5").update(`${t.name}`).digest("hex");
-const isNewTorrent = t => {
-  let id = generateTorrentId(t);
-  return !knownTorrents.has(id)
+const buildTorrentIdentifiers = torrent => {
+  const rawLink = (torrent.link || "").trim();
+  let canonicalLink = rawLink;
+
+  if (canonicalLink && canonicalLink.startsWith("/")) {
+    canonicalLink = `https://iptorrents.com${canonicalLink}`;
+  }
+
+  const fallbackParts = [
+    torrent.name || "",
+    torrent.size || "",
+    torrent.addedRaw || torrent.added || ""
+  ].join("|");
+
+  const primarySource = canonicalLink || fallbackParts;
+  const legacySource = torrent.name || "";
+
+  return {
+    primary: crypto.createHash("md5").update(primarySource).digest("hex"),
+    legacy: crypto.createHash("md5").update(legacySource).digest("hex")
+  };
 };
-const addToKnownTorrents = t => {
-  let id = generateTorrentId(t);
-  knownTorrents.add(id);
+
+const isNewTorrent = torrent => {
+  const ids = buildTorrentIdentifiers(torrent);
+  return !(knownTorrents.has(ids.primary) || knownTorrents.has(ids.legacy));
+};
+
+const addToKnownTorrents = torrent => {
+  const ids = buildTorrentIdentifiers(torrent);
+  knownTorrents.add(ids.primary);
+  if (ids.legacy && ids.legacy !== ids.primary) {
+    knownTorrents.add(ids.legacy);
+  }
   saveKnownTorrents()
 };
 

@@ -41,7 +41,10 @@ COPY iptscanner/ ./iptscanner/
 
 # Install Node.js dependencies for IPTScanner
 WORKDIR /app/iptscanner
-RUN npm install --no-cache
+# Use npm ci so the image installs exactly what's in package-lock.json.
+# The previous invocation attempted to pass a non-existent "--no-cache" flag,
+# which caused npm to emit warnings and fail builds on newer clients.
+RUN npm ci --omit=dev
 WORKDIR /app
 
 # Create directories for persistent data and set permissions
