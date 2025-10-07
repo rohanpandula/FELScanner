@@ -131,6 +131,17 @@ docker-compose up -d
    - Collection names
    - IPTorrents scanner settings (optional)
 
+## Accessing the Web UI
+
+FELScanner ships with a full-featured single-page interface that lives at the root URL of the server. Once the Flask app is running you can open `http://<host>:5000/` to:
+
+- Launch the guided setup wizard for first-time configuration.
+- Trigger scans, verify Plex collections, or start the IPTorrents monitor.
+- Download generated reports and review recent Dolby Vision/Atmos findings.
+- Adjust Plex, Telegram, and IPTorrents settings directly from the browser without touching configuration files.
+
+The UI is backed by the endpoints defined in `app.py` and the assets under `templates/` and `static/`, so hosting the application through Docker or via `python app.py` automatically exposes the management dashboard.
+
 ## Persistent Data
 
 The application stores its data in the following locations:
