@@ -41,7 +41,11 @@ COPY iptscanner/ ./iptscanner/
 
 # Install Node.js dependencies for IPTScanner
 WORKDIR /app/iptscanner
-RUN npm install --no-cache
+# Install Node dependencies without dev tooling. We rely on package.json to
+# resolve the latest compatible releases (including Puppeteer security
+# updates) instead of pinning the deprecated versions that previously shipped
+# in package-lock.json.
+RUN npm install --omit=dev
 WORKDIR /app
 
 # Create directories for persistent data and set permissions

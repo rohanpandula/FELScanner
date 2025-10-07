@@ -8,19 +8,38 @@ const totalMovies = document.getElementById('total-movies');
 const dvMovies = document.getElementById('dv-movies');
 const p7Movies = document.getElementById('p7-movies');
 const atmosMovies = document.getElementById('atmos-movies');
+const heroTotalMetric = document.getElementById('hero-total-metric');
+const heroDvMetric = document.getElementById('hero-dv-metric');
+const heroP7Metric = document.getElementById('hero-p7-metric');
+const heroAtmosMetric = document.getElementById('hero-atmos-metric');
 const lastScanTime = document.getElementById('last-scan-time');
+const lastScanTimeMobile = document.getElementById('last-scan-time-mobile');
 const nextScanContainer = document.getElementById('next-scan-container');
+const nextScanContainerMobile = document.getElementById('next-scan-container-mobile');
 const nextScanTime = document.getElementById('next-scan-time');
+const nextScanTimeMobile = document.getElementById('next-scan-time-mobile');
 const startScanBtn = document.getElementById('start-scan-btn');
 const verifyCollectionsBtn = document.getElementById('verify-collections-btn');
 const startMonitorBtn = document.getElementById('start-monitor-btn');
 const stopMonitorBtn = document.getElementById('stop-monitor-btn');
+const heroMonitorStatus = document.getElementById('hero-monitor-status');
+const heroMonitorCaption = document.getElementById('hero-monitor-caption');
+const heroMonitorSubcaption = document.getElementById('hero-monitor-subcaption');
 const noChangesAlert = document.getElementById('no-changes-alert');
 const changesContainer = document.getElementById('changes-container');
 const collectionTabs = document.getElementById('collection-tabs');
 const collectionContents = document.getElementById('collection-contents');
 const reportsTable = document.getElementById('reports-table');
 const viewAllReports = document.getElementById('view-all-reports');
+
+const setupProgressFill = document.getElementById('setup-progress-fill');
+const setupProgressSteps = document.querySelectorAll('.setup-progress-step');
+const buddyCard = document.getElementById('onboarding-buddy');
+const buddyEmoji = document.getElementById('buddy-emoji');
+const buddyTitle = document.getElementById('buddy-title');
+const buddyMessage = document.getElementById('buddy-message');
+const buddyChecklist = document.getElementById('buddy-checklist');
+const buddyFooterText = document.getElementById('buddy-footer-text');
 
 // Setup Wizard Elements
 const setupSteps = document.querySelectorAll('.setup-step');
@@ -67,9 +86,191 @@ const POLL_INTERVAL = 5000;  // 5 seconds
 let isPolling = false;
 let pollTimer = null;
 let currentCollectionTab = 'dv'; // Default tab: dv, p7 or atmos
+let activeSetupStepIndex = 0;
+let buddyCelebrationTimer = null;
 
 // Global variable to store rounding preference
 window.useWholeNumbers = true;
+
+const onboardingSteps = [
+    {
+        emoji: '👋',
+        title: 'Connect to Plex',
+        message: 'Add your Plex server URL, token, and library name so FELScanner knows exactly where to look.',
+        checklist: [
+            'Paste the full Plex URL including the port number',
+            'Grab your Plex token from the account dashboard',
+            'Enter the exact library name you want to scan'
+        ]
+    },
+    {
+        emoji: '🎬',
+        title: 'Curate your collections',
+        message: 'Choose descriptive names for Dolby Vision, Profile 7, and Atmos collections so Plex stays organised.',
+        checklist: [
+            'Pick intuitive titles for each collection',
+            'Adjust the report storage limit to suit your disk space',
+            'Keep collection names unique for easier filtering'
+        ]
+    },
+    {
+        emoji: '📣',
+        title: 'Optional notifications',
+        message: 'Enable Telegram alerts to celebrate new Dolby Vision arrivals or Atmos upgrades automatically.',
+        checklist: [
+            'Toggle Telegram alerts if you want instant updates',
+            'Paste your bot token and chat ID',
+            'Send a test message to confirm everything works'
+        ]
+    }
+];
+
+const buddyCelebrations = {
+    plexSuccess: {
+        emoji: '🎉',
+        title: 'Connection verified',
+        message: 'Plex responded perfectly. Continue to your collection preferences whenever you are ready.',
+        checklist: [
+            'Double-check your collection naming next',
+            'Keep the wizard open while adjusting settings'
+        ]
+    },
+    telegramSuccess: {
+        emoji: '📬',
+        title: 'Telegram is ready',
+        message: 'Notifications will fly the moment we spot new Dolby Vision, FEL, or Atmos content.',
+        checklist: [
+            'Stay subscribed to receive future updates',
+            'You can always toggle alerts from Settings later'
+        ]
+    },
+    saving: {
+        emoji: '🚀',
+        title: 'Finishing setup…',
+        message: 'We are storing your preferences and preparing the dashboard. This only takes a moment.',
+        checklist: [
+            'Please keep this tab open while we save',
+            'The dashboard will reload automatically when done'
+        ]
+    }
+};
+
+function applyBuddyContent(content, { celebrate = false, temporary = false } = {}) {
+    if (!buddyTitle || !content) {
+        return;
+    }
+
+    if (buddyEmoji && content.emoji) {
+        buddyEmoji.textContent = content.emoji;
+    }
+
+    buddyTitle.textContent = content.title || '';
+    buddyMessage.textContent = content.message || '';
+
+    if (buddyChecklist) {
+        if (Array.isArray(content.checklist) && content.checklist.length) {
+            buddyChecklist.innerHTML = content.checklist
+                .map(item => `<li><span class="icon"><i class="fas fa-check-circle"></i></span><span>${item}</span></li>`)
+                .join('');
+        } else {
+            buddyChecklist.innerHTML = '';
+        }
+    }
+
+    if (buddyCard) {
+        buddyCard.classList.toggle('celebrating', celebrate);
+    }
+
+    clearTimeout(buddyCelebrationTimer);
+
+    if (temporary) {
+        buddyCelebrationTimer = setTimeout(() => {
+            updateOnboardingBuddy(activeSetupStepIndex);
+        }, 6000);
+    }
+}
+
+function updateOnboardingBuddy(stepIndex) {
+    if (!buddyTitle) {
+        return;
+    }
+
+    const index = Math.max(0, Math.min(stepIndex, onboardingSteps.length - 1));
+    const content = onboardingSteps[index];
+    activeSetupStepIndex = index;
+    applyBuddyContent(content);
+}
+
+function showBuddyCelebration(key, { temporary = true } = {}) {
+    const celebration = buddyCelebrations[key];
+    if (!celebration) {
+        return;
+    }
+
+    applyBuddyContent(celebration, { celebrate: true, temporary });
+}
+
+function updateSetupProgress(index) {
+    if (!setupProgressSteps.length) {
+        return;
+    }
+
+    const maxIndex = setupProgressSteps.length - 1;
+    const clampedIndex = Math.max(0, Math.min(index, maxIndex));
+
+    setupProgressSteps.forEach((step, stepIndex) => {
+        const isActive = stepIndex === clampedIndex;
+        const isCompleted = stepIndex < index;
+        step.classList.toggle('active', isActive);
+        step.classList.toggle('completed', isCompleted);
+        step.setAttribute('aria-current', isActive ? 'step' : 'false');
+        step.setAttribute('data-completed', isCompleted);
+    });
+
+    if (setupProgressFill) {
+        const percent = maxIndex === 0 ? 100 : Math.min(100, (index / maxIndex) * 100);
+        setupProgressFill.style.width = `${Math.max(0, percent)}%`;
+    }
+}
+
+function showSetupStep(index) {
+    if (!setupSteps.length) {
+        return;
+    }
+
+    const targetIndex = Math.max(0, Math.min(index, setupSteps.length - 1));
+
+    setupSteps.forEach((step, stepIndex) => {
+        const isActive = stepIndex === targetIndex;
+        step.classList.toggle('active', isActive);
+        step.style.display = isActive ? 'block' : 'none';
+        step.setAttribute('aria-hidden', isActive ? 'false' : 'true');
+    });
+
+    activeSetupStepIndex = targetIndex;
+    updateSetupProgress(targetIndex);
+    updateOnboardingBuddy(targetIndex);
+}
+
+function initializeWizard() {
+    if (!setupSteps.length) {
+        return;
+    }
+
+    showSetupStep(activeSetupStepIndex);
+
+    setupProgressSteps.forEach((button, index) => {
+        button.addEventListener('click', () => {
+            if (index <= activeSetupStepIndex) {
+                showSetupStep(index);
+            }
+        });
+    });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    initializeWizard();
+});
 
 // IPTScanner Functionality
 let iptTorrents = [];
@@ -711,10 +912,9 @@ nextStepBtns.forEach(btn => {
     btn.addEventListener('click', () => {
         const currentStep = btn.closest('.setup-step');
         const currentIndex = Array.from(setupSteps).indexOf(currentStep);
-        
+
         if (currentIndex < setupSteps.length - 1) {
-            currentStep.style.display = 'none';
-            setupSteps[currentIndex + 1].style.display = 'block';
+            showSetupStep(currentIndex + 1);
         } else if (currentIndex === setupSteps.length - 1) {
             completeSetup();
         }
@@ -725,10 +925,9 @@ prevStepBtns.forEach(btn => {
     btn.addEventListener('click', () => {
         const currentStep = btn.closest('.setup-step');
         const currentIndex = Array.from(setupSteps).indexOf(currentStep);
-        
+
         if (currentIndex > 0) {
-            currentStep.style.display = 'none';
-            setupSteps[currentIndex - 1].style.display = 'block';
+            showSetupStep(currentIndex - 1);
         }
     });
 });
@@ -770,10 +969,12 @@ testPlexBtn.addEventListener('click', async () => {
             plexSuccess.textContent = `Connection successful! Found ${data.movie_count} movies.`;
             plexSuccess.style.display = 'block';
             plexError.style.display = 'none';
-            
+
             // Show the Next button
             const nextBtn = testPlexBtn.nextElementSibling;
             nextBtn.style.display = 'inline-block';
+
+            showBuddyCelebration('plexSuccess');
         } else {
             plexError.textContent = data.error || 'Connection failed';
             plexError.style.display = 'block';
@@ -818,6 +1019,8 @@ testTelegramBtn.addEventListener('click', async () => {
             telegramSuccess.textContent = 'Test message sent successfully!';
             telegramSuccess.style.display = 'block';
             telegramError.style.display = 'none';
+
+            showBuddyCelebration('telegramSuccess');
         } else {
             telegramError.textContent = data.error || 'Failed to send test message';
             telegramError.style.display = 'block';
@@ -845,7 +1048,10 @@ const completeSetup = async () => {
         telegram_chat_id: document.getElementById('telegram-chat-id').value.trim(),
         auto_start: 'none'  // Default to none
     };
-    
+
+    updateSetupProgress(setupSteps.length);
+    showBuddyCelebration('saving', { temporary: false });
+
     try {
         // Try the api/setup endpoint first
         let response = await fetch('/api/setup', {
@@ -916,12 +1122,15 @@ function updateStatusUI(data) {
     const status = data.status || {};
     const results = data.results || {};
     const changes = data.collection_changes || {};
-    
+    let formattedLastScan = null;
+    let formattedNextScan = null;
+    let heroCaptionSet = false;
+
     // Update status badge
     if (results.status) {
         statusBadge.textContent = capitalizeFirstLetter(results.status);
         statusBadge.className = 'status-badge ' + results.status.toLowerCase();
-        
+
         // Show progress bar if scanning
         if (results.status.toLowerCase() === 'scanning' || results.status.toLowerCase() === 'verifying') {
             scanProgressContainer.style.display = 'block';
@@ -930,27 +1139,107 @@ function updateStatusUI(data) {
         } else {
             scanProgressContainer.style.display = 'none';
         }
+
+        if (heroMonitorStatus) {
+            const normalized = results.status.toLowerCase();
+            heroMonitorStatus.textContent = capitalizeFirstLetter(results.status);
+            heroMonitorStatus.className = `hero-status-chip ${normalized || 'idle'}`;
+
+            if (normalized === 'scanning' || normalized === 'verifying') {
+                heroMonitorStatus.setAttribute('aria-live', 'assertive');
+                if (heroMonitorCaption && typeof results.scan_progress !== 'undefined') {
+                    heroMonitorCaption.textContent = `In progress · ${results.scan_progress}% complete`;
+                    heroCaptionSet = true;
+                }
+            } else {
+                heroMonitorStatus.setAttribute('aria-live', 'polite');
+            }
+        }
+    } else if (heroMonitorStatus) {
+        heroMonitorStatus.textContent = 'Idle';
+        heroMonitorStatus.className = 'hero-status-chip idle';
+        heroMonitorStatus.setAttribute('aria-live', 'polite');
     }
-    
+
     // Update stats
-    if (typeof results.total !== 'undefined') totalMovies.textContent = results.total;
-    if (typeof results.dv_count !== 'undefined') dvMovies.textContent = results.dv_count;
-    if (typeof results.p7_count !== 'undefined') p7Movies.textContent = results.p7_count;
-    if (typeof results.atmos_count !== 'undefined') atmosMovies.textContent = results.atmos_count;
-    
+    if (typeof results.total !== 'undefined') {
+        totalMovies.textContent = results.total;
+        if (heroTotalMetric) {
+            heroTotalMetric.textContent = Number(results.total).toLocaleString();
+        }
+    }
+    if (typeof results.dv_count !== 'undefined') {
+        dvMovies.textContent = results.dv_count;
+        if (heroDvMetric) {
+            heroDvMetric.textContent = Number(results.dv_count).toLocaleString();
+        }
+    }
+    if (typeof results.p7_count !== 'undefined') {
+        p7Movies.textContent = results.p7_count;
+        if (heroP7Metric) {
+            heroP7Metric.textContent = Number(results.p7_count).toLocaleString();
+        }
+    }
+    if (typeof results.atmos_count !== 'undefined') {
+        atmosMovies.textContent = results.atmos_count;
+        if (heroAtmosMetric) {
+            heroAtmosMetric.textContent = Number(results.atmos_count).toLocaleString();
+        }
+    }
+
     // Update scan times
     if (status.last_scan_time) {
-        lastScanTime.textContent = formatDateTime(status.last_scan_time);
+        formattedLastScan = formatDateTime(status.last_scan_time);
+        lastScanTime.textContent = formattedLastScan;
+        if (lastScanTimeMobile) {
+            lastScanTimeMobile.textContent = formattedLastScan;
+        }
+    } else {
+        lastScanTime.textContent = 'Never';
+        if (lastScanTimeMobile) {
+            lastScanTimeMobile.textContent = 'Never';
+        }
     }
-    
+
     // Update next scan time (if in monitor mode)
     if (status.next_scan_time) {
-        nextScanContainer.style.display = 'block';
-        nextScanTime.textContent = formatDateTime(status.next_scan_time);
+        formattedNextScan = formatDateTime(status.next_scan_time);
+        nextScanContainer.style.display = 'inline-flex';
+        nextScanTime.textContent = formattedNextScan;
+        if (nextScanContainerMobile) {
+            nextScanContainerMobile.style.display = 'block';
+        }
+        if (nextScanTimeMobile) {
+            nextScanTimeMobile.textContent = formattedNextScan;
+        }
     } else {
         nextScanContainer.style.display = 'none';
+        if (nextScanContainerMobile) {
+            nextScanContainerMobile.style.display = 'none';
+        }
+        if (nextScanTimeMobile) {
+            nextScanTimeMobile.textContent = '—';
+        }
     }
-    
+
+    if (heroMonitorCaption && !heroCaptionSet) {
+        heroMonitorCaption.textContent = formattedLastScan
+            ? `Last scan · ${formattedLastScan}`
+            : 'Waiting for the first scan';
+    }
+
+    if (heroMonitorSubcaption) {
+        if (results.status && (results.status.toLowerCase() === 'scanning' || results.status.toLowerCase() === 'verifying')) {
+            heroMonitorSubcaption.textContent = 'Streaming live progress updates';
+        } else if (formattedNextScan) {
+            heroMonitorSubcaption.textContent = `Next scan · ${formattedNextScan}`;
+        } else if (results.status && results.status.toLowerCase() === 'monitoring') {
+            heroMonitorSubcaption.textContent = 'Monitoring is active';
+        } else {
+            heroMonitorSubcaption.textContent = 'No schedule yet';
+        }
+    }
+
     // Update monitor buttons
     if (results.status && results.status.toLowerCase() === 'monitoring') {
         startMonitorBtn.style.display = 'none';
@@ -976,11 +1265,11 @@ function updateChangesUI(changes) {
     const removedItems = changes.removed_items || [];
     
     if (addedItems.length === 0 && removedItems.length === 0) {
-        noChangesAlert.style.display = 'block';
+        noChangesAlert.style.display = 'flex';
         changesContainer.style.display = 'none';
         return;
     }
-    
+
     noChangesAlert.style.display = 'none';
     changesContainer.style.display = 'block';
     
