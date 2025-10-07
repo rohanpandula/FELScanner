@@ -540,7 +540,89 @@
                             </div>
                         </div>
                     </div>
-                    
+
+                    <!-- Radarr Section -->
+                    <div class="dashboard-section">
+                        <h4>Radarr Integration</h4>
+                        <div class="card">
+                            <div class="card-body">
+                                <div class="d-flex flex-wrap justify-content-between align-items-center mb-3">
+                                    <div>
+                                        <span id="radarr-status-badge" class="badge bg-secondary">Disabled</span>
+                                        <small id="radarr-status-message" class="text-muted ms-2">Not configured</small>
+                                    </div>
+                                    <div>
+                                        <button type="button" id="radarr-refresh-btn" class="btn btn-outline-light btn-sm">
+                                            <i class="fas fa-sync-alt"></i> Refresh
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="row text-center radarr-hero-row">
+                                    <div class="col-md-4 col-sm-4 col-12 mb-3">
+                                        <div class="radarr-hero">
+                                            <div class="radarr-hero-value" id="radarr-matched-count">0</div>
+                                            <div class="radarr-hero-label">Matched Titles</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4 col-sm-4 col-12 mb-3">
+                                        <div class="radarr-hero">
+                                            <div class="radarr-hero-value" id="radarr-monitored-count">0</div>
+                                            <div class="radarr-hero-label">Monitored in Radarr</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4 col-sm-4 col-12 mb-3">
+                                        <div class="radarr-hero">
+                                            <div class="radarr-hero-value" id="radarr-missing-count">0</div>
+                                            <div class="radarr-hero-label">Needs Radarr</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div id="radarr-selected-movie" class="radarr-selected mt-3">
+                                    <h5 class="d-flex align-items-center justify-content-between">
+                                        <span id="radarr-selected-title">Select a movie to check Radarr status</span>
+                                        <span class="radarr-action-buttons">
+                                            <button type="button" id="radarr-check-btn" class="btn btn-primary btn-sm" disabled>
+                                                <i class="fas fa-search"></i> Check Radarr
+                                            </button>
+                                            <button type="button" id="radarr-add-btn" class="btn btn-success btn-sm" disabled>
+                                                <i class="fas fa-plus"></i> Add to Radarr
+                                            </button>
+                                            <a id="radarr-view-link" href="#" target="_blank" rel="noopener" class="btn btn-outline-secondary btn-sm" style="display:none;">
+                                                <i class="fas fa-external-link-alt"></i> View in Radarr
+                                            </a>
+                                        </span>
+                                    </h5>
+                                    <p id="radarr-selected-status" class="small text-muted mb-0"></p>
+                                    <div id="radarr-release-container" class="radarr-releases mt-4">
+                                        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                                            <div>
+                                                <h6 class="mb-1">Radarr Release Search</h6>
+                                                <div id="radarr-release-summary" class="text-muted small">Select a movie to begin.</div>
+                                            </div>
+                                            <div class="btn-group radarr-release-actions" role="group">
+                                                <button type="button" id="radarr-release-search-btn" class="btn btn-outline-primary btn-sm" disabled>
+                                                    <i class="fas fa-search"></i> Search Releases
+                                                </button>
+                                                <button type="button" id="radarr-release-refresh-btn" class="btn btn-outline-secondary btn-sm" disabled>
+                                                    <i class="fas fa-sync-alt"></i> Refresh Search
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mt-3">
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="radarr-filter-ipt" disabled>
+                                                <label class="form-check-label" for="radarr-filter-ipt">Only show FEL/IPT matches</label>
+                                            </div>
+                                            <small id="radarr-filter-message" class="text-muted"></small>
+                                        </div>
+                                        <div id="radarr-release-empty" class="radarr-release-empty text-muted small mt-3">Run a release search to see available results.</div>
+                                        <ul id="radarr-release-list" class="list-group list-group-flush radarr-release-list mt-2"></ul>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Collection Changes Section -->
                     <div class="dashboard-section">
                         <h4>Collection Changes</h4>
@@ -762,7 +844,55 @@
                                         </div>
                                     </div>
                                 </div>
-                                
+
+                                <!-- Radarr Settings -->
+                                <div class="form-section">
+                                    <h5>Radarr Integration</h5>
+                                    <p class="form-text">Connect FELScanner to Radarr to monitor which titles are already managed.</p>
+                                    <div class="row g-3 align-items-end">
+                                        <div class="col-md-6">
+                                            <label for="settings-radarr-url" class="form-label">Radarr Base URL</label>
+                                            <input type="text" class="form-control" id="settings-radarr-url" placeholder="http://localhost:7878">
+                                        </div>
+                                        <div class="col-md-4">
+                                            <label for="settings-radarr-api-key" class="form-label">API Key</label>
+                                            <input type="password" class="form-control" id="settings-radarr-api-key">
+                                        </div>
+                                        <div class="col-md-2 d-grid">
+                                            <button type="button" id="test-radarr-btn" class="btn btn-outline-primary">
+                                                <i class="fas fa-plug"></i> Test
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="row g-3 mt-2">
+                                        <div class="col-md-6">
+                                            <label for="settings-radarr-root-folder" class="form-label">Root Folder</label>
+                                            <select class="form-select" id="settings-radarr-root-folder">
+                                                <option value="">Select a root folder</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label for="settings-radarr-quality-profile" class="form-label">Quality Profile</label>
+                                            <select class="form-select" id="settings-radarr-quality-profile">
+                                                <option value="">Select a quality profile</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="form-check form-switch mt-3">
+                                        <input class="form-check-input" type="checkbox" id="settings-radarr-auto-import">
+                                        <label class="form-check-label" for="settings-radarr-auto-import">
+                                            Automatically monitor new additions when adding to Radarr
+                                        </label>
+                                    </div>
+                                    <div class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" id="settings-radarr-dry-run" checked>
+                                        <label class="form-check-label" for="settings-radarr-dry-run">
+                                            Dry run mode (preview add actions without sending to Radarr)
+                                        </label>
+                                    </div>
+                                    <div id="settings-radarr-test-result" class="form-text text-muted mt-2"></div>
+                                </div>
+
                                 <!-- IPTScanner Settings -->
                                 <div class="form-section">
                                     <h5>IPTScanner Settings</h5>

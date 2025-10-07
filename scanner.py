@@ -82,9 +82,15 @@ class MovieDatabase:
         """Get all Dolby Vision movies"""
         with self.get_connection() as conn:
             cursor = conn.execute('''
-            SELECT * FROM movies 
+            SELECT * FROM movies
             WHERE dv_profile IS NOT NULL AND dv_profile != 'None'
             ''')
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_all_movies(self) -> List[Dict[str, Any]]:
+        """Get all movies stored in the database"""
+        with self.get_connection() as conn:
+            cursor = conn.execute('SELECT * FROM movies')
             return [dict(row) for row in cursor.fetchall()]
     
     def get_p7_fel_movies(self):
@@ -134,6 +140,9 @@ class PlexDVScanner:
         self.session = None
         self._session_lock = threading.Lock()
         self._is_closing = False
+
+        # Optional Radarr lookup cache
+        self.radarr_index: Optional[Dict[str, Any]] = None
         
         # Progress callback
         self.progress_callback = None
@@ -194,6 +203,10 @@ class PlexDVScanner:
     def set_progress_callback(self, callback_fn):
         """Set callback for progress updates"""
         self.progress_callback = callback_fn
+
+    def set_radarr_index(self, radarr_index: Optional[Dict[str, Any]]):
+        """Attach Radarr lookup data for the current scan"""
+        self.radarr_index = radarr_index or None
     
     async def _batch_fetch_metadata(self, rating_keys: List[str]) -> List[str]:
         """Fetch metadata for a batch of movies in parallel"""
@@ -269,7 +282,36 @@ class PlexDVScanner:
         except Exception as e:
             log.error(f"Unexpected error fetching metadata from {url}: {e}")
             return None
-    
+
+    def _lookup_radarr(self, external_ids: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Find Radarr metadata for the given external IDs"""
+        if not external_ids or not self.radarr_index:
+            return None
+
+        radarr_match = None
+
+        tmdb_id = external_ids.get('tmdb')
+        imdb_id = external_ids.get('imdb')
+
+        if tmdb_id:
+            radarr_match = self.radarr_index.get('by_tmdb', {}).get(str(tmdb_id))
+
+        if not radarr_match and imdb_id:
+            radarr_match = self.radarr_index.get('by_imdb', {}).get(imdb_id)
+
+        if not radarr_match:
+            return {'exists': False}
+
+        return {
+            'exists': True,
+            'radarr_id': radarr_match.get('id'),
+            'monitored': bool(radarr_match.get('monitored')),
+            'path': radarr_match.get('path'),
+            'has_file': bool(radarr_match.get('hasFile')),
+            'quality_profile_id': radarr_match.get('qualityProfileId'),
+            'quality_profile_name': radarr_match.get('qualityProfileName')
+        }
+
     def _parse_xml_batch(self, xml_contents: List[str]) -> Generator[Tuple[str, Dict], None, None]:
         """Parse a batch of XML metadata for movies"""
         for xml_content in xml_contents:
@@ -336,6 +378,27 @@ class PlexDVScanner:
                         
                         audio_details.append(f"{codec} {format_tag}".strip())
                         
+                    # Extract external IDs for Radarr lookups
+                    external_ids: Dict[str, Any] = {}
+                    for guid in video.xpath('.//Guid'):
+                        guid_value = guid.get('id') or ''
+                        if 'themoviedb' in guid_value:
+                            try:
+                                tmdb_part = guid_value.split('://', 1)[-1]
+                                tmdb_id = tmdb_part.split('?')[0]
+                                if tmdb_id:
+                                    external_ids['tmdb'] = tmdb_id
+                            except Exception:
+                                pass
+                        elif 'imdb' in guid_value:
+                            try:
+                                imdb_part = guid_value.split('://', 1)[-1]
+                                imdb_id = imdb_part.split('?')[0]
+                                if imdb_id:
+                                    external_ids['imdb'] = imdb_id
+                            except Exception:
+                                pass
+
                     media_info = {
                         'title': title,
                         'year': year,
@@ -345,7 +408,8 @@ class PlexDVScanner:
                         'file_size': file_size,
                         'video_bitrate': video_bitrate,
                         'video_bitrate_raw': video_bitrate_raw,
-                        'audio_tracks': ", ".join(audio_details) if audio_details else "Unknown"
+                        'audio_tracks': ", ".join(audio_details) if audio_details else "Unknown",
+                        'external_ids': external_ids
                     }
                     
                     # Direct check for Profile 7 FEL streams (most efficient)
@@ -412,15 +476,23 @@ class PlexDVScanner:
                 movie = movie_dict.get(rating_key)
                 if movie:
                     # Store extra data including file size
+                    external_ids = media_info.get('external_ids') or {}
+                    radarr_info = self._lookup_radarr(external_ids)
+
                     extra_data = {
                         'year': media_info.get('year'),
                         'file_size': media_info.get('file_size'),
                         'audio_tracks': media_info.get('audio_tracks'),
                         'video_bitrate': media_info.get('video_bitrate'),
                         'video_bitrate_raw': media_info.get('video_bitrate_raw'),
-                        'dovi_profile': media_info.get('dv_profile')
+                        'dovi_profile': media_info.get('dv_profile'),
+                        'external_ids': external_ids
                     }
-                    
+
+                    if radarr_info:
+                        media_info['radarr'] = radarr_info
+                        extra_data['radarr'] = radarr_info
+
                     self.db.update_movie(
                         rating_key=rating_key,
                         title=movie.title,
@@ -463,6 +535,7 @@ class PlexDVScanner:
             for movie in dv_movies:
                 dv_titles.add(movie['title'])
                 extra_data = movie.get('extra_data', {}) or {}
+                radarr_info = movie.get('radarr') or extra_data.get('radarr') or {}
                 movie_data.append({
                     'title': movie['title'],
                     'year': movie.get('year') or extra_data.get('year', ''),
@@ -470,17 +543,34 @@ class PlexDVScanner:
                     'dv_fel': movie['dv_fel'],
                     'has_atmos': False,
                     'file_size': self._format_file_size(extra_data.get('file_size') or movie.get('file_size')),
-                    'scan_date': datetime.now().isoformat()
+                    'scan_date': datetime.now().isoformat(),
+                    'radarr': {
+                        'exists': bool(radarr_info.get('exists')),
+                        'monitored': bool(radarr_info.get('monitored')) if radarr_info.get('exists') else False,
+                        'quality_profile_id': radarr_info.get('quality_profile_id'),
+                        'quality_profile_name': radarr_info.get('quality_profile_name'),
+                        'path': radarr_info.get('path'),
+                        'has_file': radarr_info.get('has_file')
+                    }
                 })
             
             # Process Atmos movies
             if atmos_movies:
                 for movie in atmos_movies:
                     extra_data = movie.get('extra_data', {}) or {}
+                    radarr_info = movie.get('radarr') or extra_data.get('radarr') or {}
                     if movie['title'] in dv_titles:
                         for entry in movie_data:
                             if entry['title'] == movie['title']:
                                 entry['has_atmos'] = True
+                                entry['radarr'] = entry.get('radarr') or {
+                                    'exists': bool(radarr_info.get('exists')),
+                                    'monitored': bool(radarr_info.get('monitored')) if radarr_info.get('exists') else False,
+                                    'quality_profile_id': radarr_info.get('quality_profile_id'),
+                                    'quality_profile_name': radarr_info.get('quality_profile_name'),
+                                    'path': radarr_info.get('path'),
+                                    'has_file': radarr_info.get('has_file')
+                                }
                                 break
                     else:
                         movie_data.append({
@@ -490,7 +580,15 @@ class PlexDVScanner:
                             'dv_fel': False,
                             'has_atmos': True,
                             'file_size': self._format_file_size(extra_data.get('file_size') or movie.get('file_size')),
-                            'scan_date': datetime.now().isoformat()
+                            'scan_date': datetime.now().isoformat(),
+                            'radarr': {
+                                'exists': bool(radarr_info.get('exists')),
+                                'monitored': bool(radarr_info.get('monitored')) if radarr_info.get('exists') else False,
+                                'quality_profile_id': radarr_info.get('quality_profile_id'),
+                                'quality_profile_name': radarr_info.get('quality_profile_name'),
+                                'path': radarr_info.get('path'),
+                                'has_file': radarr_info.get('has_file')
+                            }
                         })
             
             report_data = {
@@ -525,26 +623,32 @@ class PlexDVScanner:
             movie_dict = {}
             for movie in dv_movies:
                 extra_data = movie.get('extra_data', {}) or {}
+                radarr_info = movie.get('radarr') or extra_data.get('radarr') or {}
                 movie_dict[movie['title']] = {
                     'dv_profile': movie['dv_profile'],
                     'dv_fel': movie['dv_fel'],
                     'has_atmos': False,
                     'year': movie.get('year') or extra_data.get('year', ''),
-                    'file_size': extra_data.get('file_size') or movie.get('file_size')
+                    'file_size': extra_data.get('file_size') or movie.get('file_size'),
+                    'radarr': radarr_info
                 }
-                
+
             if atmos_movies:
                 for movie in atmos_movies:
                     extra_data = movie.get('extra_data', {}) or {}
+                    radarr_info = movie.get('radarr') or extra_data.get('radarr') or {}
                     if movie['title'] in movie_dict:
                         movie_dict[movie['title']]['has_atmos'] = True
+                        if radarr_info:
+                            movie_dict[movie['title']]['radarr'] = radarr_info
                     else:
                         movie_dict[movie['title']] = {
                             'dv_profile': None,
                             'dv_fel': False,
                             'has_atmos': True,
                             'year': movie.get('year') or extra_data.get('year', ''),
-                            'file_size': extra_data.get('file_size') or movie.get('file_size')
+                            'file_size': extra_data.get('file_size') or movie.get('file_size'),
+                            'radarr': radarr_info
                         }
             
             # Use larger buffer for better performance
@@ -552,7 +656,18 @@ class PlexDVScanner:
             
             with open(output_path, 'w', newline='', encoding='utf-8', buffering=buffer_size) as f:
                 writer = csv.writer(f, delimiter='|', quotechar='"')
-                writer.writerow(["Title", "Year", "File Size", "DV Profile", "FEL", "TrueHD Atmos"])
+                writer.writerow([
+                    "Title",
+                    "Year",
+                    "File Size",
+                    "DV Profile",
+                    "FEL",
+                    "TrueHD Atmos",
+                    "Radarr Present",
+                    "Radarr Monitored",
+                    "Radarr Quality Profile",
+                    "Radarr Path"
+                ])
                 
                 # Write in batches for better performance
                 batch_size = 100
@@ -560,14 +675,19 @@ class PlexDVScanner:
                 
                 for title, info in movie_dict.items():
                     file_size_str = self._format_file_size(info.get('file_size')) if info.get('file_size') else "Unknown"
-                    
+                    radarr_info = info.get('radarr') or {}
+
                     rows.append([
                         title,
                         info.get('year', ''),
                         file_size_str,
                         info['dv_profile'] if info['dv_profile'] else "None",
                         "True" if info['dv_fel'] else "False",
-                        "True" if info['has_atmos'] else "False"
+                        "True" if info['has_atmos'] else "False",
+                        "True" if radarr_info.get('exists') else "False",
+                        "True" if radarr_info.get('exists') and radarr_info.get('monitored') else "False",
+                        radarr_info.get('quality_profile_name') or '',
+                        radarr_info.get('path') or ''
                     ])
                     count += 1
                     
@@ -647,7 +767,9 @@ class PlexDVScanner:
                 'collection': coll_name,
                 'time': datetime.now().isoformat(),
                 'year': movie.year if hasattr(movie, 'year') else additional_info.get('year'),
-                'file_size': additional_info.get('file_size')
+                'file_size': additional_info.get('file_size'),
+                'external_ids': additional_info.get('external_ids'),
+                'radarr': additional_info.get('radarr')
             })
             
         try:

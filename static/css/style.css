@@ -114,6 +114,96 @@ body {
     text-align: right;
 }
 
+.radarr-hero {
+    background-color: rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+    padding: 1rem;
+}
+
+.radarr-hero-value {
+    font-size: 2rem;
+    font-weight: 700;
+    color: #fff;
+}
+
+.radarr-hero-label {
+    font-size: 0.85rem;
+    color: #9ca3af;
+}
+
+.radarr-selected {
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    padding-top: 1rem;
+}
+
+.radarr-action-buttons .btn {
+    margin-left: 0.5rem;
+}
+
+.radarr-badge {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+}
+
+.radarr-releases {
+    background-color: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 0.75rem;
+    padding: 1rem;
+}
+
+.radarr-release-actions .btn {
+    min-width: 130px;
+}
+
+.radarr-release-empty {
+    display: none;
+}
+
+.radarr-release-list .list-group-item {
+    background-color: transparent;
+    border-color: rgba(255, 255, 255, 0.08);
+    color: inherit;
+    padding: 0.75rem 0;
+}
+
+.radarr-release-item + .radarr-release-item {
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.radarr-release-title {
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+}
+
+.radarr-release-meta {
+    font-size: 0.8rem;
+    color: #9ca3af;
+}
+
+.radarr-release-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.5rem;
+}
+
+.radarr-release-tags .badge {
+    font-size: 0.7rem;
+    text-transform: none;
+    letter-spacing: 0.01em;
+}
+
+.list-group-item.radarr-selectable {
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+.list-group-item.radarr-selectable.active,
+.list-group-item.radarr-selectable:hover {
+    background-color: rgba(49, 130, 206, 0.15);
+}
+
 /* Responsive adjustments */
 @media (max-width: 768px) {
     .stat-box {

@@ -21,6 +21,34 @@ const collectionTabs = document.getElementById('collection-tabs');
 const collectionContents = document.getElementById('collection-contents');
 const reportsTable = document.getElementById('reports-table');
 const viewAllReports = document.getElementById('view-all-reports');
+const radarrStatusBadge = document.getElementById('radarr-status-badge');
+const radarrStatusMessage = document.getElementById('radarr-status-message');
+const radarrMatchedCount = document.getElementById('radarr-matched-count');
+const radarrMonitoredCount = document.getElementById('radarr-monitored-count');
+const radarrMissingCount = document.getElementById('radarr-missing-count');
+const radarrRefreshBtn = document.getElementById('radarr-refresh-btn');
+const radarrCheckBtn = document.getElementById('radarr-check-btn');
+const radarrAddBtn = document.getElementById('radarr-add-btn');
+const radarrViewLink = document.getElementById('radarr-view-link');
+const radarrSelectedTitle = document.getElementById('radarr-selected-title');
+const radarrSelectedStatus = document.getElementById('radarr-selected-status');
+const radarrSelectedPanel = document.getElementById('radarr-selected-movie');
+const radarrReleaseContainer = document.getElementById('radarr-release-container');
+const radarrReleaseSummary = document.getElementById('radarr-release-summary');
+const radarrReleaseList = document.getElementById('radarr-release-list');
+const radarrReleaseEmpty = document.getElementById('radarr-release-empty');
+const radarrReleaseSearchBtn = document.getElementById('radarr-release-search-btn');
+const radarrReleaseRefreshBtn = document.getElementById('radarr-release-refresh-btn');
+const radarrFilterIptToggle = document.getElementById('radarr-filter-ipt');
+const radarrFilterMessage = document.getElementById('radarr-filter-message');
+const radarrSettingsResult = document.getElementById('settings-radarr-test-result');
+const radarrBaseUrlInput = document.getElementById('settings-radarr-url');
+const radarrApiKeyInput = document.getElementById('settings-radarr-api-key');
+const radarrRootFolderSelect = document.getElementById('settings-radarr-root-folder');
+const radarrQualityProfileSelect = document.getElementById('settings-radarr-quality-profile');
+const radarrAutoImportToggle = document.getElementById('settings-radarr-auto-import');
+const radarrDryRunToggle = document.getElementById('settings-radarr-dry-run');
+const radarrTestBtn = document.getElementById('test-radarr-btn');
 
 // Setup Wizard Elements
 const setupSteps = document.querySelectorAll('.setup-step');
@@ -67,6 +95,17 @@ const POLL_INTERVAL = 5000;  // 5 seconds
 let isPolling = false;
 let pollTimer = null;
 let currentCollectionTab = 'dv'; // Default tab: dv, p7 or atmos
+let radarrOptionsCache = { rootFolders: [], qualityProfiles: [] };
+let selectedDashboardMovie = null;
+let selectedDashboardElement = null;
+let radarrBaseUrlCached = '';
+let radarrStatusState = { status: 'disabled' };
+let lastRadarrReleaseResult = null;
+let radarrReleaseLoading = false;
+
+if (radarrReleaseContainer) {
+    resetRadarrReleases();
+}
 
 // Global variable to store rounding preference
 window.useWholeNumbers = true;
@@ -904,8 +943,9 @@ async function updateStatus() {
     try {
         const response = await fetch('/api/status');
         const data = await response.json();
-        
+
         updateStatusUI(data);
+        updateRadarrStatus();
     } catch (error) {
         console.error('Error updating status:', error);
     }
@@ -1041,6 +1081,10 @@ function updateCollectionTab(addedItems, removedItems) {
     while (collectionContents.firstChild) {
         collectionContents.removeChild(collectionContents.firstChild);
     }
+
+    selectedDashboardMovie = null;
+    selectedDashboardElement = null;
+    updateSelectedMoviePanel();
     
     // Create sections for added and removed items
     if (addedItems.length > 0) {
@@ -1112,6 +1156,9 @@ function createCollectionSection(title, items, type) {
         // Append to list item
         listItem.appendChild(titleEl);
         listItem.appendChild(metaInfo);
+        renderRadarrBadge(metaInfo, item.radarr);
+        listItem.classList.add('radarr-selectable');
+        listItem.addEventListener('click', () => selectDashboardMovie(item, listItem));
         list.appendChild(listItem);
     });
     
@@ -1132,8 +1179,15 @@ function getCollectionNameByTab(tabId) {
 
 // Format relative time
 function formatTimeSince(dateString) {
+    if (!dateString) return 'Unknown';
+
     const now = new Date();
     const time = new Date(dateString);
+
+    if (Number.isNaN(time.getTime())) {
+        return 'Unknown';
+    }
+
     const diff = Math.floor((now - time) / 1000); // difference in seconds
     
     if (diff < 60) return `${diff} seconds ago`;
@@ -1219,21 +1273,45 @@ async function loadSettings() {
         document.getElementById('settings-telegram-enabled').checked = telegramEnabled;
         document.getElementById('settings-telegram-token').value = settings.telegram_token || '';
         document.getElementById('settings-telegram-chat-id').value = settings.telegram_chat_id || '';
-        
+
         // Show/hide Telegram settings based on enabled state
         const telegramContainer = document.getElementById('settings-telegram-container');
         if (telegramContainer) {
             telegramContainer.style.display = telegramEnabled ? 'block' : 'none';
         }
-        
+
         // Update notification preferences
         document.getElementById('settings-notify-all').checked = settings.telegram_notify_all_updates || false;
         document.getElementById('settings-notify-new').checked = settings.telegram_notify_new_movies !== false;
         document.getElementById('settings-notify-dv').checked = settings.telegram_notify_dv !== false;
         document.getElementById('settings-notify-p7').checked = settings.telegram_notify_p7 !== false;
         document.getElementById('settings-notify-atmos').checked = settings.telegram_notify_atmos !== false;
-        
+
+        // Update Radarr settings if elements exist
+        if (radarrBaseUrlInput) {
+            radarrBaseUrlInput.value = settings.radarr_base_url || '';
+        }
+        if (radarrApiKeyInput) {
+            radarrApiKeyInput.value = settings.radarr_api_key || '';
+        }
+        radarrBaseUrlCached = settings.radarr_base_url || '';
+        if (radarrRootFolderSelect) {
+            populateRadarrOptions(
+                settings.radarr_root_folders || [],
+                settings.radarr_quality_profiles || [],
+                settings.radarr_root_folder_id || '',
+                settings.radarr_quality_profile_id || ''
+            );
+        }
+        if (radarrAutoImportToggle) {
+            radarrAutoImportToggle.checked = settings.radarr_auto_import === true;
+        }
+        if (radarrDryRunToggle) {
+            radarrDryRunToggle.checked = settings.radarr_dry_run !== false;
+        }
+
         console.log('Settings loaded successfully');
+        updateRadarrStatus(true);
     } catch (error) {
         console.error('Error loading settings:', error);
     }
@@ -1350,6 +1428,88 @@ viewAllReports.addEventListener('click', () => {
     viewAllReports.style.display = 'none';
 });
 
+if (radarrTestBtn) {
+    radarrTestBtn.addEventListener('click', async () => {
+        const baseUrl = radarrBaseUrlInput.value.trim();
+        const apiKey = radarrApiKeyInput.value.trim();
+
+        if (!baseUrl || !apiKey) {
+            showToast('Enter Radarr base URL and API key to test the connection', 'warning');
+            return;
+        }
+
+        radarrTestBtn.disabled = true;
+        radarrTestBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Testing';
+
+        try {
+            const response = await fetch('/api/radarr/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ base_url: baseUrl, api_key: apiKey })
+            });
+            const data = await response.json();
+
+            if (data.success) {
+                populateRadarrOptions(data.root_folders || [], data.quality_profiles || []);
+                radarrSettingsResult.textContent = `Connected. ${data.movies_in_radarr || 0} movies available.`;
+                radarrSettingsResult.classList.remove('text-danger');
+                radarrSettingsResult.classList.add('text-success');
+                radarrBaseUrlCached = baseUrl;
+                showToast('Radarr connection successful', 'success');
+            } else {
+                radarrSettingsResult.textContent = data.error || 'Failed to connect to Radarr';
+                radarrSettingsResult.classList.add('text-danger');
+                radarrSettingsResult.classList.remove('text-success');
+                showToast(data.error || 'Failed to connect to Radarr', 'error');
+            }
+        } catch (error) {
+            radarrSettingsResult.textContent = error.message;
+            radarrSettingsResult.classList.add('text-danger');
+            radarrSettingsResult.classList.remove('text-success');
+            showToast('Error testing Radarr connection: ' + error.message, 'error');
+        } finally {
+            radarrTestBtn.disabled = false;
+            radarrTestBtn.innerHTML = '<i class="fas fa-plug"></i> Test';
+        }
+    });
+}
+
+if (radarrRefreshBtn) {
+    radarrRefreshBtn.addEventListener('click', () => updateRadarrStatus(true));
+}
+
+if (radarrCheckBtn) {
+    radarrCheckBtn.addEventListener('click', () => checkSelectedMovie(false));
+}
+
+if (radarrAddBtn) {
+    radarrAddBtn.addEventListener('click', () => checkSelectedMovie(true));
+}
+
+if (radarrReleaseSearchBtn) {
+    radarrReleaseSearchBtn.addEventListener('click', () => loadRadarrReleases({ refresh: false, source: 'search' }));
+}
+
+if (radarrReleaseRefreshBtn) {
+    radarrReleaseRefreshBtn.addEventListener('click', () => loadRadarrReleases({ refresh: true, source: 'refresh' }));
+}
+
+if (radarrFilterIptToggle) {
+    radarrFilterIptToggle.addEventListener('change', () => {
+        if (!selectedDashboardMovie) {
+            radarrFilterIptToggle.checked = false;
+            showToast('Select a movie before applying the IPT filter', 'warning');
+            return;
+        }
+
+        if (radarrReleaseLoading) {
+            return;
+        }
+
+        loadRadarrReleases({ refresh: false, source: 'filter' });
+    });
+}
+
 // Toggle Telegram Settings in settings form
 settingsTelegramEnabled.addEventListener('change', () => {
     settingsTelegramContainer.style.display = settingsTelegramEnabled.checked ? 'block' : 'none';
@@ -1378,7 +1538,13 @@ saveSettingsBtn.addEventListener('click', async () => {
         telegram_notify_new_movies: document.getElementById('settings-notify-new').checked,
         telegram_notify_dv: document.getElementById('settings-notify-dv').checked,
         telegram_notify_p7: document.getElementById('settings-notify-p7').checked,
-        telegram_notify_atmos: document.getElementById('settings-notify-atmos').checked
+        telegram_notify_atmos: document.getElementById('settings-notify-atmos').checked,
+        radarr_base_url: radarrBaseUrlInput ? radarrBaseUrlInput.value : '',
+        radarr_api_key: radarrApiKeyInput ? radarrApiKeyInput.value : '',
+        radarr_root_folder_id: radarrRootFolderSelect ? radarrRootFolderSelect.value : '',
+        radarr_quality_profile_id: radarrQualityProfileSelect ? radarrQualityProfileSelect.value : '',
+        radarr_auto_import: radarrAutoImportToggle ? radarrAutoImportToggle.checked : false,
+        radarr_dry_run: radarrDryRunToggle ? radarrDryRunToggle.checked : true
     };
     
     try {
@@ -1391,9 +1557,11 @@ saveSettingsBtn.addEventListener('click', async () => {
         });
         
         const data = await response.json();
-        
+
         if (data.success) {
             showToast('Settings saved successfully', 'success');
+            radarrBaseUrlCached = radarrBaseUrlInput ? radarrBaseUrlInput.value : radarrBaseUrlCached;
+            updateRadarrStatus(true);
         } else {
             showToast('Error saving settings', 'error');
         }
@@ -1521,6 +1689,656 @@ function cleanupAudioTracks(audioString) {
     
     // Join the unique tracks back together
     return uniqueTracks.join(', ');
+}
+
+function populateRadarrOptions(rootFolders = [], qualityProfiles = [], selectedRoot = '', selectedProfile = '') {
+    radarrOptionsCache.rootFolders = rootFolders;
+    radarrOptionsCache.qualityProfiles = qualityProfiles;
+
+    if (radarrRootFolderSelect) {
+        const currentValue = selectedRoot || radarrRootFolderSelect.value;
+        radarrRootFolderSelect.innerHTML = '';
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = 'Select a root folder';
+        radarrRootFolderSelect.appendChild(placeholder);
+
+        rootFolders.forEach(folder => {
+            const option = document.createElement('option');
+            option.value = folder.id;
+            option.textContent = folder.path;
+            if (String(folder.id) === String(currentValue)) {
+                option.selected = true;
+            }
+            radarrRootFolderSelect.appendChild(option);
+        });
+    }
+
+    if (radarrQualityProfileSelect) {
+        const currentProfile = selectedProfile || radarrQualityProfileSelect.value;
+        radarrQualityProfileSelect.innerHTML = '';
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = 'Select a quality profile';
+        radarrQualityProfileSelect.appendChild(placeholder);
+
+        qualityProfiles.forEach(profile => {
+            const option = document.createElement('option');
+            option.value = profile.id;
+            option.textContent = profile.name;
+            if (String(profile.id) === String(currentProfile)) {
+                option.selected = true;
+            }
+            radarrQualityProfileSelect.appendChild(option);
+        });
+    }
+}
+
+async function updateRadarrStatus(force = false) {
+    if (!radarrStatusBadge) return;
+
+    try {
+        const response = await fetch(`/api/radarr/status${force ? '?refresh=true' : ''}`);
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || data.message || 'Failed to fetch Radarr status');
+        }
+
+        applyRadarrStatus(data);
+
+        if (data.root_folders && data.quality_profiles) {
+            populateRadarrOptions(
+                data.root_folders,
+                data.quality_profiles,
+                data.root_folder_id || '',
+                data.quality_profile_id || ''
+            );
+        }
+    } catch (error) {
+        console.error('Error fetching Radarr status:', error);
+        applyRadarrStatus({ status: 'error', message: error.message });
+    }
+}
+
+function applyRadarrStatus(data) {
+    if (!radarrStatusBadge) return;
+
+    const status = (data.status || 'unknown').toLowerCase();
+    const message = data.message || '';
+
+    radarrStatusState = data;
+
+    let badgeClass = 'bg-secondary';
+    if (status === 'connected') {
+        badgeClass = 'bg-success';
+    } else if (status === 'error') {
+        badgeClass = 'bg-danger';
+    } else if (status === 'disabled') {
+        badgeClass = 'bg-dark';
+    }
+
+    radarrStatusBadge.className = `badge ${badgeClass}`;
+    radarrStatusBadge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+
+    if (radarrStatusMessage) {
+        radarrStatusMessage.textContent = message;
+    }
+
+    if (radarrMatchedCount) {
+        radarrMatchedCount.textContent = data.matched ?? 0;
+    }
+    if (radarrMonitoredCount) {
+        radarrMonitoredCount.textContent = data.monitored ?? 0;
+    }
+    if (radarrMissingCount) {
+        const totalKnown = data.total_known ?? 0;
+        const matched = data.matched ?? 0;
+        const missing = Math.max(0, totalKnown - matched);
+        radarrMissingCount.textContent = missing;
+    }
+
+    updateSelectedMoviePanel();
+
+    updateRadarrReleaseControls();
+}
+
+function getRadarrMovieKey(movie = null) {
+    const target = movie || selectedDashboardMovie;
+    if (!target) return null;
+    const ids = target.external_ids || {};
+    return `${ids.tmdb || ''}::${ids.imdb || ''}`;
+}
+
+function resetRadarrReleases() {
+    lastRadarrReleaseResult = null;
+
+    if (radarrReleaseList) {
+        radarrReleaseList.innerHTML = '';
+    }
+
+    if (radarrReleaseEmpty) {
+        radarrReleaseEmpty.style.display = 'block';
+        radarrReleaseEmpty.textContent = selectedDashboardMovie
+            ? 'Run a release search to see available results.'
+            : 'Select a movie to see release matches.';
+    }
+
+    if (radarrReleaseSummary) {
+        radarrReleaseSummary.textContent = selectedDashboardMovie
+            ? 'Ready to search for Radarr releases.'
+            : 'Select a movie to begin.';
+    }
+
+    if (radarrFilterMessage) {
+        radarrFilterMessage.textContent = '';
+    }
+
+    updateRadarrReleaseControls();
+}
+
+function updateRadarrReleaseControls() {
+    const status = (radarrStatusState.status || '').toLowerCase();
+    const ids = selectedDashboardMovie ? (selectedDashboardMovie.external_ids || {}) : {};
+    const hasIdentifiers = Boolean(ids.tmdb || ids.imdb);
+    const canSearch = status === 'connected' && hasIdentifiers;
+
+    if (radarrReleaseSearchBtn && !radarrReleaseLoading) {
+        radarrReleaseSearchBtn.disabled = !canSearch;
+    }
+
+    if (radarrReleaseRefreshBtn && !radarrReleaseLoading) {
+        radarrReleaseRefreshBtn.disabled = !canSearch;
+    }
+
+    if (radarrFilterIptToggle) {
+        radarrFilterIptToggle.disabled = status !== 'connected';
+    }
+}
+
+function setRadarrReleaseLoading(isLoading, { refresh = false } = {}) {
+    radarrReleaseLoading = isLoading;
+
+    const status = (radarrStatusState.status || '').toLowerCase();
+    const ids = selectedDashboardMovie ? (selectedDashboardMovie.external_ids || {}) : {};
+    const hasIdentifiers = Boolean(ids.tmdb || ids.imdb);
+    const canSearch = status === 'connected' && hasIdentifiers;
+
+    if (radarrReleaseSearchBtn) {
+        radarrReleaseSearchBtn.disabled = isLoading || !canSearch;
+        radarrReleaseSearchBtn.innerHTML = isLoading && !refresh
+            ? '<i class="fas fa-spinner fa-spin"></i> Searching...'
+            : '<i class="fas fa-search"></i> Search Releases';
+    }
+
+    if (radarrReleaseRefreshBtn) {
+        radarrReleaseRefreshBtn.disabled = isLoading || !canSearch;
+        radarrReleaseRefreshBtn.innerHTML = isLoading && refresh
+            ? '<i class="fas fa-spinner fa-spin"></i> Refreshing...'
+            : '<i class="fas fa-sync-alt"></i> Refresh Search';
+    }
+}
+
+async function loadRadarrReleases({ refresh = false, source = 'search' } = {}) {
+    if (!selectedDashboardMovie) {
+        showToast('Select a movie from the dashboard first', 'warning');
+        return;
+    }
+
+    const status = (radarrStatusState.status || '').toLowerCase();
+    if (status !== 'connected') {
+        showToast('Connect to Radarr before searching for releases', 'warning');
+        return;
+    }
+
+    if (radarrReleaseLoading) {
+        return;
+    }
+
+    const ids = selectedDashboardMovie.external_ids || {};
+    if (!ids.tmdb && !ids.imdb) {
+        showToast('Selected movie is missing TMDB or IMDB identifiers', 'warning');
+        return;
+    }
+
+    const movieKey = getRadarrMovieKey(selectedDashboardMovie);
+
+    const payload = {
+        filter_ipt: radarrFilterIptToggle ? radarrFilterIptToggle.checked : false,
+    };
+
+    if (refresh) {
+        payload.refresh = true;
+    }
+
+    if (ids.tmdb) {
+        payload.tmdb_id = ids.tmdb;
+    }
+    if (ids.imdb) {
+        payload.imdb_id = ids.imdb;
+    }
+
+    const radarrExisting = (selectedDashboardMovie.radarrCheck && selectedDashboardMovie.radarrCheck.existing) || null;
+    const radarrScanned = selectedDashboardMovie.radarr || {};
+
+    if (radarrExisting && radarrExisting.id) {
+        payload.movie_id = radarrExisting.id;
+    } else if (radarrScanned && radarrScanned.radarr_id) {
+        payload.movie_id = radarrScanned.radarr_id;
+    }
+
+    if (!payload.movie_id && selectedDashboardMovie.year) {
+        payload.term = `${selectedDashboardMovie.title} ${selectedDashboardMovie.year}`;
+    } else if (!payload.movie_id) {
+        payload.term = selectedDashboardMovie.title;
+    }
+
+    try {
+        setRadarrReleaseLoading(true, { refresh });
+
+        if (radarrReleaseSummary) {
+            radarrReleaseSummary.textContent = refresh
+                ? 'Refreshing Radarr release search...'
+                : 'Searching Radarr for release options...';
+        }
+
+        if (radarrReleaseEmpty) {
+            radarrReleaseEmpty.style.display = 'none';
+        }
+
+        if (radarrReleaseList) {
+            radarrReleaseList.innerHTML = '';
+        }
+
+        const response = await fetch('/api/radarr/releases', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || data.success === false) {
+            throw new Error(data.error || data.message || 'Radarr release lookup failed');
+        }
+
+        if (movieKey !== getRadarrMovieKey()) {
+            return;
+        }
+
+        lastRadarrReleaseResult = data;
+        renderRadarrReleaseResults(data);
+
+        if (source !== 'filter') {
+            showToast('Radarr release search complete', 'success');
+        }
+    } catch (error) {
+        console.error('Radarr release search failed:', error);
+        if (source !== 'filter') {
+            showToast('Radarr release search failed: ' + error.message, 'error');
+        }
+
+        if (radarrReleaseSummary) {
+            radarrReleaseSummary.textContent = 'Release search failed. Try again.';
+        }
+
+        if (radarrReleaseEmpty) {
+            radarrReleaseEmpty.style.display = 'block';
+            radarrReleaseEmpty.textContent = 'No release results available.';
+        }
+    } finally {
+        setRadarrReleaseLoading(false, { refresh });
+        updateRadarrReleaseControls();
+    }
+}
+
+function renderRadarrReleaseResults(result = {}) {
+    if (!radarrReleaseList) return;
+
+    const releases = Array.isArray(result.releases) ? result.releases : [];
+    const total = Number.isFinite(result.total_releases) ? result.total_releases : releases.length;
+    const filteredOut = Number.isFinite(result.filtered_out) ? result.filtered_out : Math.max(0, total - releases.length);
+    const filterApplied = Boolean(result.filter_applied);
+    const filterSummary = result.filter_summary || {};
+    const iptSnapshot = result.ipt_snapshot || {};
+
+    radarrReleaseList.innerHTML = '';
+
+    if (radarrFilterIptToggle) {
+        radarrFilterIptToggle.checked = filterApplied;
+    }
+
+    if (radarrFilterMessage) {
+        const filterParts = [];
+        if (iptSnapshot.search_term) {
+            filterParts.push(`IPT search: ${iptSnapshot.search_term}`);
+        }
+        if (iptSnapshot.last_check) {
+            const lastCheckText = formatTimeSince(iptSnapshot.last_check);
+            if (lastCheckText && lastCheckText !== 'Unknown') {
+                filterParts.push(`Last sync ${lastCheckText}`);
+            }
+        }
+        if (iptSnapshot.message) {
+            filterParts.push(iptSnapshot.message);
+        }
+        radarrFilterMessage.textContent = filterParts.join(' • ');
+    }
+
+    if (radarrReleaseSummary) {
+        const summaryParts = [];
+        if (total > 0) {
+            summaryParts.push(`Found ${total} ${total === 1 ? 'release' : 'releases'}`);
+        }
+        if (filterApplied) {
+            if (filteredOut > 0) {
+                summaryParts.push(`${filteredOut} filtered by FEL/IPT`);
+            }
+            if (filterSummary.matches) {
+                summaryParts.push(`${filterSummary.matches} IPT match${filterSummary.matches === 1 ? '' : 'es'}`);
+            }
+        }
+        if (releases.length > 0) {
+            summaryParts.push(`Showing ${releases.length}`);
+        }
+        radarrReleaseSummary.textContent = summaryParts.length > 0
+            ? summaryParts.join(' • ')
+            : 'No releases found for this movie.';
+    }
+
+    if (releases.length === 0) {
+        if (radarrReleaseEmpty) {
+            radarrReleaseEmpty.style.display = 'block';
+            if (total === 0) {
+                radarrReleaseEmpty.textContent = 'Radarr did not return any releases for this movie.';
+            } else if (filterApplied && filteredOut === total) {
+                radarrReleaseEmpty.textContent = 'All releases were filtered out by the FEL/IPT criteria.';
+            } else {
+                radarrReleaseEmpty.textContent = 'No releases match the current filters.';
+            }
+        }
+        return;
+    }
+
+    if (radarrReleaseEmpty) {
+        radarrReleaseEmpty.style.display = 'none';
+    }
+
+    const createBadge = (text, className = 'bg-secondary', title = '') => {
+        const badge = document.createElement('span');
+        badge.className = `badge ${className}`;
+        badge.textContent = text;
+        if (title) {
+            badge.title = title;
+        }
+        return badge;
+    };
+
+    releases.forEach(release => {
+        const item = document.createElement('li');
+        item.className = 'list-group-item radarr-release-item';
+
+        const title = document.createElement('div');
+        title.className = 'radarr-release-title';
+        title.textContent = release.title || release.releaseTitle || release.movieTitle || 'Unknown release';
+        item.appendChild(title);
+
+        const metaParts = [];
+        const quality = (release.quality && release.quality.quality && release.quality.quality.name) || release.quality?.name;
+        if (quality) metaParts.push(quality);
+        if (release.releaseGroup) metaParts.push(release.releaseGroup);
+        if (release.indexer) metaParts.push(release.indexer);
+        if (release.protocol) metaParts.push(String(release.protocol).replace(/_/g, ' ').toUpperCase());
+        if (release.size) metaParts.push(formatFileSize(release.size));
+
+        const meta = document.createElement('div');
+        meta.className = 'radarr-release-meta';
+        meta.textContent = metaParts.join(' · ');
+        item.appendChild(meta);
+
+        const tagContainer = document.createElement('div');
+        tagContainer.className = 'radarr-release-tags';
+
+        if (typeof release.seeders === 'number') {
+            tagContainer.appendChild(createBadge(`${release.seeders} seeders`, 'bg-success'));
+        }
+
+        if (typeof release.leechers === 'number') {
+            tagContainer.appendChild(createBadge(`${release.leechers} leechers`, 'bg-warning text-dark'));
+        }
+
+        if (release.publishDate) {
+            const ageText = formatTimeSince(release.publishDate);
+            if (ageText && ageText !== 'Unknown') {
+                tagContainer.appendChild(createBadge(ageText, 'bg-secondary'));
+            }
+        }
+
+        if (release.iptMatchTitle) {
+            tagContainer.appendChild(createBadge('IPT match', 'bg-info text-dark', release.iptMatchTitle));
+        }
+
+        if (release.language) {
+            tagContainer.appendChild(createBadge(release.language, 'bg-dark'));
+        }
+
+        if (release.mediaInfo && release.mediaInfo.videoCodec) {
+            tagContainer.appendChild(createBadge(release.mediaInfo.videoCodec.toUpperCase(), 'bg-primary'));
+        }
+
+        if (tagContainer.children.length > 0) {
+            item.appendChild(tagContainer);
+        }
+
+        radarrReleaseList.appendChild(item);
+    });
+}
+
+function selectDashboardMovie(item, element) {
+    const previousKey = getRadarrMovieKey();
+
+    selectedDashboardMovie = item;
+
+    if (selectedDashboardElement) {
+        selectedDashboardElement.classList.remove('active');
+    }
+
+    selectedDashboardElement = element;
+
+    if (selectedDashboardElement) {
+        selectedDashboardElement.classList.add('active');
+    }
+
+    if (getRadarrMovieKey() !== previousKey) {
+        resetRadarrReleases();
+    }
+
+    updateSelectedMoviePanel();
+}
+
+function updateSelectedMoviePanel(latestResult = null) {
+    if (!radarrSelectedPanel) {
+        return;
+    }
+
+    if (!selectedDashboardMovie) {
+        if (radarrSelectedTitle) {
+            radarrSelectedTitle.textContent = 'Select a movie to check Radarr status';
+        }
+        if (radarrSelectedStatus) {
+            radarrSelectedStatus.textContent = '';
+        }
+        if (radarrCheckBtn) radarrCheckBtn.disabled = true;
+        if (radarrAddBtn) radarrAddBtn.disabled = true;
+        if (radarrViewLink) radarrViewLink.style.display = 'none';
+        resetRadarrReleases();
+        return;
+    }
+
+    const ids = selectedDashboardMovie.external_ids || {};
+    const radarrResult = latestResult || selectedDashboardMovie.radarrCheck || {};
+
+    if (radarrSelectedTitle) {
+        const year = selectedDashboardMovie.year ? ` (${selectedDashboardMovie.year})` : '';
+        radarrSelectedTitle.textContent = `${selectedDashboardMovie.title || 'Selected Movie'}${year}`;
+    }
+
+    if (radarrCheckBtn) {
+        const status = (radarrStatusState.status || '').toLowerCase();
+        radarrCheckBtn.disabled = (!ids.tmdb && !ids.imdb) || status === 'disabled' || status === 'error';
+    }
+
+    let statusLines = [];
+    let canAdd = false;
+
+    if (radarrResult && radarrResult.match_type === 'existing' && radarrResult.existing) {
+        const existing = radarrResult.existing;
+        statusLines.push(`Already in Radarr (${existing.monitored ? 'monitored' : 'not monitored'})`);
+        if (existing.quality_profile_name) {
+            statusLines.push(`Profile: ${existing.quality_profile_name}`);
+        }
+        if (existing.path) {
+            statusLines.push(existing.path);
+        }
+
+        if (radarrViewLink && radarrBaseUrlCached && existing.id) {
+            radarrViewLink.style.display = 'inline-flex';
+            radarrViewLink.href = `${radarrBaseUrlCached.replace(/\/$/, '')}/#/movie/${existing.id}`;
+        } else if (radarrViewLink) {
+            radarrViewLink.style.display = 'none';
+        }
+
+        if (radarrAddBtn) {
+            radarrAddBtn.disabled = true;
+        }
+    } else if (radarrResult && radarrResult.match_type === 'lookup' && (radarrResult.candidates || []).length > 0) {
+        const candidate = radarrResult.candidates[0];
+        statusLines.push(`Candidate found in Radarr (${candidate.title || ''})`);
+        statusLines.push('Ready to add to Radarr.');
+        canAdd = true;
+        if (radarrViewLink) {
+            radarrViewLink.style.display = 'none';
+        }
+    } else if (selectedDashboardMovie.radarr && selectedDashboardMovie.radarr.exists) {
+        const existingInfo = selectedDashboardMovie.radarr;
+        statusLines.push(`Present in Radarr (${existingInfo.monitored ? 'monitored' : 'not monitored'})`);
+        if (existingInfo.quality_profile_name) {
+            statusLines.push(`Profile: ${existingInfo.quality_profile_name}`);
+        }
+        if (existingInfo.path) {
+            statusLines.push(existingInfo.path);
+        }
+        if (radarrViewLink && radarrBaseUrlCached && existingInfo.radarr_id) {
+            radarrViewLink.style.display = 'inline-flex';
+            radarrViewLink.href = `${radarrBaseUrlCached.replace(/\/$/, '')}/#/movie/${existingInfo.radarr_id}`;
+        }
+    } else {
+        statusLines.push('No Radarr entry detected. Run a check to search for matches.');
+        if (radarrViewLink) {
+            radarrViewLink.style.display = 'none';
+        }
+    }
+
+    if (radarrSelectedStatus) {
+        radarrSelectedStatus.textContent = statusLines.join(' ');
+    }
+
+    if (radarrAddBtn) {
+        const status = (radarrStatusState.status || '').toLowerCase();
+        radarrAddBtn.disabled = !canAdd || status !== 'connected';
+    }
+
+    updateRadarrReleaseControls();
+}
+
+async function checkSelectedMovie(add = false) {
+    if (!selectedDashboardMovie) {
+        showToast('Select a movie from the dashboard first', 'warning');
+        return;
+    }
+
+    const ids = selectedDashboardMovie.external_ids || {};
+
+    if (!ids.tmdb && !ids.imdb) {
+        showToast('Selected movie is missing TMDB or IMDB identifiers', 'warning');
+        return;
+    }
+
+    if (radarrCheckBtn) {
+        radarrCheckBtn.disabled = true;
+    }
+    if (add && radarrAddBtn) {
+        radarrAddBtn.disabled = true;
+    }
+
+    const payload = {
+        tmdb_id: ids.tmdb,
+        imdb_id: ids.imdb,
+        title: selectedDashboardMovie.title,
+        year: selectedDashboardMovie.year
+    };
+
+    if (add) {
+        payload.add = true;
+    }
+
+    try {
+        const response = await fetch('/api/radarr/check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+
+        if (!response.ok || data.success === false) {
+            throw new Error(data.error || data.message || 'Radarr check failed');
+        }
+
+        selectedDashboardMovie.radarrCheck = data;
+        updateSelectedMoviePanel(data);
+
+        if (data.added) {
+            showToast('Movie added to Radarr', 'success');
+            updateRadarrStatus(true);
+        } else if (data.message) {
+            showToast(data.message, data.added ? 'success' : 'info');
+        } else {
+            showToast('Radarr check complete', 'success');
+        }
+    } catch (error) {
+        console.error('Radarr check failed:', error);
+        showToast('Radarr check failed: ' + error.message, 'error');
+    } finally {
+        if (radarrCheckBtn) {
+            radarrCheckBtn.disabled = false;
+        }
+        if (radarrAddBtn) {
+            radarrAddBtn.disabled = false;
+        }
+    }
+}
+
+function renderRadarrBadge(container, radarrInfo) {
+    if (!container) return;
+
+    let badge = container.querySelector('.radarr-badge');
+
+    if (!radarrInfo || !radarrInfo.exists) {
+        if (badge) {
+            badge.remove();
+        }
+        return;
+    }
+
+    if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'badge radarr-badge ms-2';
+        container.appendChild(badge);
+    }
+
+    badge.textContent = radarrInfo.monitored ? 'Radarr: Monitored' : 'Radarr: Unmonitored';
+    badge.classList.toggle('bg-success', !!radarrInfo.monitored);
+    badge.classList.toggle('bg-warning', !radarrInfo.monitored);
 }
 
 // Set up click handlers for stat cards

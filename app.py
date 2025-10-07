@@ -7,10 +7,13 @@ import time
 import threading
 import requests
 import pytz
+import re
 from datetime import datetime, timedelta
 from flask_compress import Compress
 from plexapi.server import PlexServer
-from scanner import PlexDVScanner
+from scanner import PlexDVScanner, MovieDatabase
+from integrations.radarr import RadarrClient
+from typing import Any, Dict, List, Optional, Tuple
 import sys
 import subprocess
 
@@ -49,6 +52,12 @@ app.config.update(
     AUTO_START_MODE="none",
     MAX_REPORTS_SIZE=5,
     SCAN_FREQUENCY=24,
+    RADARR_BASE_URL=os.environ.get('RADARR_BASE_URL', ""),
+    RADARR_API_KEY=os.environ.get('RADARR_API_KEY', ""),
+    RADARR_ROOT_FOLDER_ID=os.environ.get('RADARR_ROOT_FOLDER_ID', ""),
+    RADARR_QUALITY_PROFILE_ID=os.environ.get('RADARR_QUALITY_PROFILE_ID', ""),
+    RADARR_AUTO_IMPORT=os.environ.get('RADARR_AUTO_IMPORT', 'false').lower() == 'true',
+    RADARR_DRY_RUN=os.environ.get('RADARR_DRY_RUN', 'true').lower() != 'false',
     TELEGRAM_ENABLED=os.environ.get('TELEGRAM_ENABLED', 'false').lower() == 'true',
     TELEGRAM_TOKEN=os.environ.get('TELEGRAM_TOKEN', ""),
     TELEGRAM_CHAT_ID=os.environ.get('TELEGRAM_CHAT_ID', ""),
@@ -87,10 +96,269 @@ class AppState:
             'telegram': {'status': 'unknown', 'message': 'Not connected'},
             'server': {'status': 'connected', 'message': 'Web server running'}
         }
+        self.radarr_stats = {
+            'status': 'disabled',
+            'message': 'Radarr integration not configured',
+            'matched': 0,
+            'monitored': 0,
+            'total_known': 0,
+            'movies_in_radarr': 0,
+            'last_checked': None,
+            'root_folders': [],
+            'quality_profiles': []
+        }
+        self.movie_db: Optional[MovieDatabase] = None
         self.lock = threading.RLock()  # For thread-safe state updates
 
 # Create application state
 state = AppState()
+
+RADARR_STATUS_TTL = 60  # seconds
+
+
+def run_async_task(coro):
+    """Run an async coroutine in a dedicated event loop"""
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
+
+
+def get_movie_database() -> MovieDatabase:
+    with state.lock:
+        if state.movie_db:
+            return state.movie_db
+
+    db_path = os.path.join(app.config['REPORTS_FOLDER_PATH'], 'movie_database.db')
+    movie_db = MovieDatabase(db_path)
+
+    with state.lock:
+        state.movie_db = movie_db
+
+    return movie_db
+
+
+async def build_radarr_index(base_url: str, api_key: str) -> Dict[str, Any]:
+    client = RadarrClient(base_url, api_key)
+    try:
+        movies = await client.get_movies()
+        root_folders = await client.get_root_folders()
+        quality_profiles = await client.get_quality_profiles()
+    finally:
+        await client.close()
+
+    profile_map = {str(profile.get('id')): profile.get('name') for profile in quality_profiles or []}
+
+    index: Dict[str, Any] = {
+        'movies': movies or [],
+        'by_tmdb': {},
+        'by_imdb': {},
+        'profiles': profile_map,
+        'root_folders': [{'id': folder.get('id'), 'path': folder.get('path')} for folder in root_folders or []],
+        'quality_profiles': [{'id': profile.get('id'), 'name': profile.get('name')} for profile in quality_profiles or []]
+    }
+
+    for movie in index['movies']:
+        movie_copy = dict(movie)
+        quality_profile_id = movie.get('qualityProfileId')
+        if quality_profile_id is not None:
+            movie_copy['qualityProfileName'] = profile_map.get(str(quality_profile_id)) or profile_map.get(quality_profile_id)
+
+        tmdb_id = movie.get('tmdbId')
+        imdb_id = movie.get('imdbId')
+
+        if tmdb_id:
+            index['by_tmdb'][str(tmdb_id)] = movie_copy
+        if imdb_id:
+            index['by_imdb'][imdb_id] = movie_copy
+
+    return index
+
+
+def compute_radarr_stats(index: Dict[str, Any]) -> Dict[str, Any]:
+    matched = 0
+    monitored = 0
+    total_known = 0
+
+    try:
+        movies = get_movie_database().get_all_movies()
+    except Exception as exc:
+        log.error(f"Failed to read movie database for Radarr stats: {exc}")
+        movies = []
+
+    total_known = len(movies)
+
+    for movie in movies:
+        radarr_movie = None
+        extra_data = movie.get('extra_data')
+
+        external_ids = {}
+        if extra_data:
+            try:
+                extra = json.loads(extra_data)
+                external_ids = extra.get('external_ids') or {}
+            except Exception:
+                external_ids = {}
+
+        tmdb_id = external_ids.get('tmdb')
+        imdb_id = external_ids.get('imdb')
+
+        if tmdb_id and str(tmdb_id) in index.get('by_tmdb', {}):
+            radarr_movie = index['by_tmdb'][str(tmdb_id)]
+        elif imdb_id and imdb_id in index.get('by_imdb', {}):
+            radarr_movie = index['by_imdb'][imdb_id]
+
+        if radarr_movie:
+            matched += 1
+            if radarr_movie.get('monitored'):
+                monitored += 1
+
+    return {
+        'matched': matched,
+        'monitored': monitored,
+        'total_known': total_known,
+        'movies_in_radarr': len(index.get('movies', []))
+    }
+
+
+def _normalize_release_name(value: Optional[str]) -> str:
+    if not value:
+        return ''
+    return re.sub(r'[^a-z0-9]+', '', value.lower())
+
+
+def load_iptorrents_snapshot() -> Tuple[List[Dict[str, Any]], Optional[str], Optional[str]]:
+    """Load the latest IPTorrents search snapshot for filtering."""
+
+    iptscanner_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
+    config_path = os.path.join(iptscanner_dir, 'config.json')
+    js_data_path = os.path.join(iptscanner_dir, 'known_torrents.json')
+    app_data_dir = os.path.join(iptscanner_dir, 'data')
+    app_data_path = os.path.join(app_data_dir, 'torrents.json')
+
+    search_term = "BL+EL+RPU"
+    last_check = None
+
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r', encoding='utf-8') as config_file:
+                config = json.load(config_file)
+            last_check = config.get('lastUpdateTime')
+            search_term = config.get('iptorrents', {}).get('searchTerm', search_term)
+        except Exception as exc:
+            log.error(f"Failed to load IPTorrents config for snapshot: {exc}")
+
+    torrents: List[Dict[str, Any]] = []
+
+    for path in (js_data_path, app_data_path):
+        if os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as torrent_file:
+                    data = json.load(torrent_file)
+                if isinstance(data, list):
+                    torrents = data
+                    break
+            except Exception as exc:
+                log.error(f"Failed to read IPTorrents data from {path}: {exc}")
+
+    if torrents:
+        for torrent in torrents:
+            added_text = torrent.get('added', '')
+            if 'sortTime' in torrent or not isinstance(added_text, str):
+                continue
+
+            try:
+                if 'min ago' in added_text:
+                    minutes = float(added_text.split(' ')[0])
+                    torrent['sortTime'] = time.time() - (minutes * 60)
+                elif 'hr ago' in added_text:
+                    hours = float(added_text.split(' ')[0])
+                    torrent['sortTime'] = time.time() - (hours * 3600)
+                elif 'day ago' in added_text:
+                    days = float(added_text.split(' ')[0])
+                    torrent['sortTime'] = time.time() - (days * 86400)
+                elif 'wk ago' in added_text:
+                    weeks = float(added_text.split(' ')[0])
+                    torrent['sortTime'] = time.time() - (weeks * 604800)
+            except Exception:
+                torrent['sortTime'] = torrent.get('sortTime', 0)
+
+        torrents.sort(
+            key=lambda torrent: (
+                0 if torrent.get('isNew', False) else 1,
+                -(torrent.get('sortTime', 0) or 0)
+            ),
+            reverse=False
+        )
+
+    return torrents, search_term, last_check
+
+
+def filter_releases_with_ipt(
+    releases: List[Dict[str, Any]],
+    torrents: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if not torrents:
+        return releases, {'matches': 0, 'available_titles': 0}
+
+    normalized_torrents: List[Tuple[str, str]] = []
+    seen_norms = set()
+
+    for torrent in torrents:
+        candidate_names = [
+            torrent.get('title'),
+            torrent.get('name'),
+            torrent.get('releaseTitle'),
+            torrent.get('cleanName'),
+        ]
+
+        for candidate in candidate_names:
+            norm = _normalize_release_name(candidate)
+            if norm and norm not in seen_norms:
+                normalized_torrents.append((norm, candidate or ''))
+                seen_norms.add(norm)
+
+    matched_releases: List[Dict[str, Any]] = []
+    match_count = 0
+
+    for release in releases:
+        release_names = [
+            release.get('title'),
+            release.get('releaseTitle'),
+            release.get('movieTitle'),
+        ]
+
+        matched_title = None
+
+        for release_name in release_names:
+            release_norm = _normalize_release_name(release_name)
+            if not release_norm:
+                continue
+
+            for torrent_norm, torrent_name in normalized_torrents:
+                if not torrent_norm:
+                    continue
+
+                if release_norm in torrent_norm or torrent_norm in release_norm:
+                    matched_title = torrent_name
+                    break
+
+            if matched_title:
+                break
+
+        if matched_title:
+            release_copy = dict(release)
+            release_copy['iptMatchTitle'] = matched_title
+            matched_releases.append(release_copy)
+            match_count += 1
+
+    return matched_releases, {
+        'matches': match_count,
+        'available_titles': len(normalized_torrents),
+    }
 
 # Load settings from file
 def load_settings():
@@ -98,10 +366,19 @@ def load_settings():
         if not os.path.exists(app.config['SETTINGS_FILE']):
             log.warning(f"Settings file not found at {app.config['SETTINGS_FILE']}, using default settings")
             return
-            
+
         log.info(f"Loading settings from {app.config['SETTINGS_FILE']}")
         with open(app.config['SETTINGS_FILE'], 'r') as f:
             settings = json.load(f)
+
+        def _to_bool(value, default=None):
+            if value is None:
+                return default
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.lower() in ('true', '1', 'yes', 'on')
+            return bool(value)
             
         # Load Plex settings - don't override env variables
         if 'plex_url' in settings and not os.environ.get('PLEX_URL'):
@@ -144,7 +421,22 @@ def load_settings():
         app.config['TELEGRAM_NOTIFY_DV'] = settings.get('telegram_notify_dv', True)
         app.config['TELEGRAM_NOTIFY_P7'] = settings.get('telegram_notify_p7', True)
         app.config['TELEGRAM_NOTIFY_ATMOS'] = settings.get('telegram_notify_atmos', True)
-        
+
+        # Load Radarr settings
+        radarr_settings = settings.get('radarr', {})
+        app.config['RADARR_BASE_URL'] = settings.get('radarr_base_url', radarr_settings.get('base_url', app.config['RADARR_BASE_URL']))
+        app.config['RADARR_API_KEY'] = settings.get('radarr_api_key', radarr_settings.get('api_key', app.config['RADARR_API_KEY']))
+        app.config['RADARR_ROOT_FOLDER_ID'] = settings.get('radarr_root_folder_id', radarr_settings.get('root_folder_id', app.config['RADARR_ROOT_FOLDER_ID']))
+        app.config['RADARR_QUALITY_PROFILE_ID'] = settings.get('radarr_quality_profile_id', radarr_settings.get('quality_profile_id', app.config['RADARR_QUALITY_PROFILE_ID']))
+        app.config['RADARR_AUTO_IMPORT'] = _to_bool(
+            settings.get('radarr_auto_import', radarr_settings.get('auto_import', app.config['RADARR_AUTO_IMPORT'])),
+            app.config['RADARR_AUTO_IMPORT']
+        )
+        app.config['RADARR_DRY_RUN'] = _to_bool(
+            settings.get('radarr_dry_run', radarr_settings.get('dry_run', app.config['RADARR_DRY_RUN'])),
+            app.config['RADARR_DRY_RUN']
+        )
+
         # Load setup_completed setting and log it
         setup_completed_value = settings.get('setup_completed', app.config['SETUP_COMPLETED'])
         log.info(f"Setting setup_completed to {setup_completed_value} (from settings file value: {settings.get('setup_completed', 'not found')})")
@@ -206,8 +498,23 @@ def save_settings():
             'telegram_notify_dv': app.config['TELEGRAM_NOTIFY_DV'],
             'telegram_notify_p7': app.config['TELEGRAM_NOTIFY_P7'],
             'telegram_notify_atmos': app.config['TELEGRAM_NOTIFY_ATMOS'],
+            'radarr_base_url': app.config['RADARR_BASE_URL'],
+            'radarr_api_key': app.config['RADARR_API_KEY'],
+            'radarr_root_folder_id': app.config['RADARR_ROOT_FOLDER_ID'],
+            'radarr_quality_profile_id': app.config['RADARR_QUALITY_PROFILE_ID'],
+            'radarr_auto_import': app.config['RADARR_AUTO_IMPORT'],
+            'radarr_dry_run': app.config['RADARR_DRY_RUN'],
             'setup_completed': app.config['SETUP_COMPLETED'],
             'last_scan_results': app.config['LAST_SCAN_RESULTS']
+        }
+
+        settings['radarr'] = {
+            'base_url': app.config['RADARR_BASE_URL'],
+            'api_key': app.config['RADARR_API_KEY'],
+            'root_folder_id': app.config['RADARR_ROOT_FOLDER_ID'],
+            'quality_profile_id': app.config['RADARR_QUALITY_PROFILE_ID'],
+            'auto_import': app.config['RADARR_AUTO_IMPORT'],
+            'dry_run': app.config['RADARR_DRY_RUN']
         }
         
         # Save the last scan time if available
@@ -402,7 +709,10 @@ def initialize_scanner():
             app.config['REPORTS_FOLDER_PATH']
         )
         scanner.set_progress_callback(update_scan_progress)
-        
+
+        with state.lock:
+            state.movie_db = scanner.db
+
         return scanner
     except Exception as e:
         log.error(f"Error initializing scanner: {e}")
@@ -481,10 +791,23 @@ async def async_run_scan():
         
         if not state.scanner_obj:
             state.scanner_obj = initialize_scanner()
-            
+
         if not state.scanner_obj:
             raise Exception("Failed to initialize scanner")
-            
+
+        radarr_index = None
+        radarr_error = None
+        if app.config['RADARR_BASE_URL'] and app.config['RADARR_API_KEY']:
+            try:
+                radarr_index = await build_radarr_index(app.config['RADARR_BASE_URL'], app.config['RADARR_API_KEY'])
+                state.scanner_obj.set_radarr_index(radarr_index)
+            except Exception as exc:
+                radarr_error = str(exc)
+                log.error(f"Radarr integration error: {exc}")
+                state.scanner_obj.set_radarr_index(None)
+        else:
+            state.scanner_obj.set_radarr_index(None)
+
         # Perform full scan with Profile 7 / FEL detection
         dv_movies, p7_fel_movies, atmos_movies = await state.scanner_obj.scan_library()
         
@@ -627,10 +950,48 @@ async def async_run_scan():
             'p7_count': p7_count,
             'atmos_count': atmos_count
         }
-        
+
         # Save to disk
         save_settings()
-        
+
+        # Update Radarr stats after scan
+        if radarr_index:
+            radarr_stats = compute_radarr_stats(radarr_index)
+            radarr_stats.update({
+                'status': 'connected',
+                'message': f"Connected to Radarr ({radarr_stats['matched']} matched)",
+                'root_folders': radarr_index.get('root_folders', []),
+                'quality_profiles': radarr_index.get('quality_profiles', []),
+                'last_checked': datetime.now(pytz.UTC).isoformat()
+            })
+        elif radarr_error:
+            radarr_stats = {
+                'status': 'error',
+                'message': radarr_error,
+                'matched': 0,
+                'monitored': 0,
+                'total_known': 0,
+                'movies_in_radarr': 0,
+                'root_folders': [],
+                'quality_profiles': [],
+                'last_checked': datetime.now(pytz.UTC).isoformat()
+            }
+        else:
+            radarr_stats = {
+                'status': 'disabled',
+                'message': 'Radarr integration not configured',
+                'matched': 0,
+                'monitored': 0,
+                'total_known': 0,
+                'movies_in_radarr': 0,
+                'root_folders': [],
+                'quality_profiles': [],
+                'last_checked': datetime.now(pytz.UTC).isoformat()
+            }
+
+        with state.lock:
+            state.radarr_stats = radarr_stats
+
         # Send scan complete notification
         if app.config['TELEGRAM_ENABLED'] and app.config['TELEGRAM_NOTIFY_ALL_UPDATES']:
             message = f"""<b>🎬 FELScanner</b>
@@ -1236,13 +1597,28 @@ def get_settings():
         'telegram_notify_new_movies': app.config['TELEGRAM_NOTIFY_NEW_MOVIES'],
         'telegram_notify_dv': app.config['TELEGRAM_NOTIFY_DV'],
         'telegram_notify_p7': app.config['TELEGRAM_NOTIFY_P7'],
-        'telegram_notify_atmos': app.config['TELEGRAM_NOTIFY_ATMOS']
+        'telegram_notify_atmos': app.config['TELEGRAM_NOTIFY_ATMOS'],
+        'radarr_base_url': app.config['RADARR_BASE_URL'],
+        'radarr_api_key': app.config['RADARR_API_KEY'],
+        'radarr_root_folder_id': app.config['RADARR_ROOT_FOLDER_ID'],
+        'radarr_quality_profile_id': app.config['RADARR_QUALITY_PROFILE_ID'],
+        'radarr_auto_import': app.config['RADARR_AUTO_IMPORT'],
+        'radarr_dry_run': app.config['RADARR_DRY_RUN'],
+        'radarr_root_folders': state.radarr_stats.get('root_folders', []),
+        'radarr_quality_profiles': state.radarr_stats.get('quality_profiles', [])
     })
 
 @app.route('/api/settings', methods=['POST'])
 def save_settings_api():
     try:
         settings = request.json
+
+        def _to_bool(value):
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.lower() in ('true', '1', 'yes', 'on')
+            return bool(value)
         
         # Update configuration
         if 'plex_url' in settings and settings['plex_url']:
@@ -1310,11 +1686,34 @@ def save_settings_api():
             
         if 'telegram_notify_atmos' in settings:
             app.config['TELEGRAM_NOTIFY_ATMOS'] = settings['telegram_notify_atmos']
-        
+
+        if 'radarr_base_url' in settings:
+            app.config['RADARR_BASE_URL'] = settings['radarr_base_url'] or ''
+
+        if 'radarr_api_key' in settings:
+            app.config['RADARR_API_KEY'] = settings['radarr_api_key'] or ''
+
+        if 'radarr_root_folder_id' in settings:
+            app.config['RADARR_ROOT_FOLDER_ID'] = settings['radarr_root_folder_id'] or ''
+
+        if 'radarr_quality_profile_id' in settings:
+            app.config['RADARR_QUALITY_PROFILE_ID'] = settings['radarr_quality_profile_id'] or ''
+
+        if 'radarr_auto_import' in settings:
+            app.config['RADARR_AUTO_IMPORT'] = _to_bool(settings['radarr_auto_import'])
+
+        if 'radarr_dry_run' in settings:
+            app.config['RADARR_DRY_RUN'] = _to_bool(settings['radarr_dry_run'])
+
         save_settings()
         check_plex_connection()
         check_telegram_connection()
-        
+
+        with state.lock:
+            state.radarr_stats['last_checked'] = None
+            if state.scanner_obj and hasattr(state.scanner_obj, 'set_radarr_index'):
+                state.scanner_obj.set_radarr_index(None)
+
         # Reset scanner to pick up new settings
         with state.lock:
             if state.scanner_obj and hasattr(state.scanner_obj, 'close'):
@@ -1333,6 +1732,380 @@ def save_settings_api():
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/radarr/test', methods=['POST'])
+def radarr_test_connection():
+    data = request.get_json() or {}
+    base_url = (data.get('base_url') or data.get('radarr_base_url') or app.config['RADARR_BASE_URL'] or '').strip()
+    api_key = (data.get('api_key') or data.get('radarr_api_key') or app.config['RADARR_API_KEY'] or '').strip()
+
+    if not base_url or not api_key:
+        return jsonify({'success': False, 'error': 'Radarr base URL and API key are required'}), 400
+
+    try:
+        index = run_async_task(build_radarr_index(base_url, api_key))
+        response = {
+            'success': True,
+            'root_folders': index.get('root_folders', []),
+            'quality_profiles': index.get('quality_profiles', []),
+            'movies_in_radarr': len(index.get('movies', []))
+        }
+        return jsonify(response)
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+
+
+@app.route('/api/radarr/status')
+def radarr_status():
+    if not app.config['RADARR_BASE_URL'] or not app.config['RADARR_API_KEY']:
+        response = {
+            'configured': False,
+            'status': 'disabled',
+            'message': 'Radarr integration not configured',
+            'matched': 0,
+            'monitored': 0,
+            'total_known': 0,
+            'movies_in_radarr': 0,
+            'root_folders': [],
+            'quality_profiles': [],
+            'auto_import': app.config['RADARR_AUTO_IMPORT'],
+            'dry_run': app.config['RADARR_DRY_RUN'],
+            'root_folder_id': app.config['RADARR_ROOT_FOLDER_ID'],
+            'quality_profile_id': app.config['RADARR_QUALITY_PROFILE_ID']
+        }
+        return jsonify(response)
+
+    refresh = request.args.get('refresh', 'false').lower() == 'true'
+
+    with state.lock:
+        cached_stats = dict(state.radarr_stats)
+
+    if not refresh and cached_stats.get('last_checked'):
+        try:
+            last_checked = datetime.fromisoformat(cached_stats['last_checked'])
+            if datetime.now(pytz.UTC) - last_checked < timedelta(seconds=RADARR_STATUS_TTL):
+                cached_stats.update({
+                    'configured': True,
+                    'auto_import': app.config['RADARR_AUTO_IMPORT'],
+                    'dry_run': app.config['RADARR_DRY_RUN'],
+                    'root_folder_id': app.config['RADARR_ROOT_FOLDER_ID'],
+                    'quality_profile_id': app.config['RADARR_QUALITY_PROFILE_ID']
+                })
+                return jsonify(cached_stats)
+        except Exception:
+            pass
+
+    try:
+        index = run_async_task(build_radarr_index(app.config['RADARR_BASE_URL'], app.config['RADARR_API_KEY']))
+        stats = compute_radarr_stats(index)
+        stats.update({
+            'status': 'connected',
+            'message': f"Connected to Radarr ({stats['matched']} matched)",
+            'root_folders': index.get('root_folders', []),
+            'quality_profiles': index.get('quality_profiles', []),
+            'last_checked': datetime.now(pytz.UTC).isoformat()
+        })
+        with state.lock:
+            state.radarr_stats = stats
+
+        stats.update({
+            'configured': True,
+            'auto_import': app.config['RADARR_AUTO_IMPORT'],
+            'dry_run': app.config['RADARR_DRY_RUN'],
+            'root_folder_id': app.config['RADARR_ROOT_FOLDER_ID'],
+            'quality_profile_id': app.config['RADARR_QUALITY_PROFILE_ID']
+        })
+        return jsonify(stats)
+    except Exception as exc:
+        error_stats = {
+            'configured': True,
+            'status': 'error',
+            'message': str(exc),
+            'matched': 0,
+            'monitored': 0,
+            'total_known': 0,
+            'movies_in_radarr': 0,
+            'root_folders': [],
+            'quality_profiles': [],
+            'last_checked': datetime.now(pytz.UTC).isoformat(),
+            'auto_import': app.config['RADARR_AUTO_IMPORT'],
+            'dry_run': app.config['RADARR_DRY_RUN'],
+            'root_folder_id': app.config['RADARR_ROOT_FOLDER_ID'],
+            'quality_profile_id': app.config['RADARR_QUALITY_PROFILE_ID']
+        }
+        with state.lock:
+            state.radarr_stats = error_stats
+        return jsonify(error_stats), 500
+
+
+@app.route('/api/radarr/check', methods=['POST'])
+def radarr_check():
+    if not app.config['RADARR_BASE_URL'] or not app.config['RADARR_API_KEY']:
+        return jsonify({'success': False, 'error': 'Radarr integration not configured'}), 400
+
+    payload = request.get_json() or {}
+
+    def _to_bool(value, default=False):
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in ('true', '1', 'yes', 'on')
+        return bool(value)
+
+    tmdb_id = payload.get('tmdb_id') or payload.get('tmdbId')
+    imdb_id = payload.get('imdb_id') or payload.get('imdbId')
+    title = payload.get('title')
+    year = payload.get('year')
+    add_requested = _to_bool(payload.get('add'), False)
+    profile_override = payload.get('quality_profile_id') or payload.get('qualityProfileId')
+    root_override = payload.get('root_folder_id') or payload.get('rootFolderId')
+    dry_run_override = payload.get('dry_run')
+
+    if not (tmdb_id or imdb_id or title):
+        return jsonify({'success': False, 'error': 'A TMDB ID, IMDB ID, or title is required'}), 400
+
+    async def _radarr_check():
+        client = RadarrClient(app.config['RADARR_BASE_URL'], app.config['RADARR_API_KEY'])
+        try:
+            existing = []
+            if tmdb_id or imdb_id:
+                try:
+                    existing = await client.get_movie(tmdb_id=tmdb_id, imdb_id=imdb_id)
+                except Exception as exc:
+                    log.debug(f"Radarr get_movie failed: {exc}")
+                    existing = []
+
+            lookup = []
+            if not existing:
+                lookup_term = None
+                if title and year:
+                    lookup_term = f"{title} ({year})"
+                elif title:
+                    lookup_term = title
+
+                try:
+                    lookup = await client.lookup_movie(tmdb_id=tmdb_id, imdb_id=imdb_id, term=lookup_term)
+                except Exception as exc:
+                    log.debug(f"Radarr lookup failed: {exc}")
+                    lookup = []
+
+            dry_run_flag = _to_bool(dry_run_override, app.config['RADARR_DRY_RUN'])
+
+            response: Dict[str, Any] = {
+                'success': True,
+                'match_type': 'none',
+                'auto_import': app.config['RADARR_AUTO_IMPORT'],
+                'dry_run': dry_run_flag,
+                'existing': None,
+                'candidates': [],
+                'added': False
+            }
+
+            if existing:
+                movie_data = existing[0]
+                response['match_type'] = 'existing'
+                response['existing'] = {
+                    'title': movie_data.get('title'),
+                    'monitored': movie_data.get('monitored'),
+                    'quality_profile_id': movie_data.get('qualityProfileId'),
+                    'quality_profile_name': movie_data.get('qualityProfileName'),
+                    'path': movie_data.get('path'),
+                    'has_file': movie_data.get('hasFile'),
+                    'tmdbId': movie_data.get('tmdbId'),
+                    'imdbId': movie_data.get('imdbId'),
+                    'id': movie_data.get('id')
+                }
+            elif lookup:
+                response['match_type'] = 'lookup'
+                response['candidates'] = [
+                    {
+                        'title': candidate.get('title'),
+                        'year': candidate.get('year'),
+                        'tmdbId': candidate.get('tmdbId'),
+                        'imdbId': candidate.get('imdbId'),
+                        'quality_profile_id': candidate.get('qualityProfileId'),
+                        'title_slug': candidate.get('titleSlug')
+                    }
+                    for candidate in lookup
+                ]
+
+                if add_requested:
+                    quality_profile_id = profile_override or app.config['RADARR_QUALITY_PROFILE_ID']
+                    root_folder_id = root_override or app.config['RADARR_ROOT_FOLDER_ID']
+
+                    if not quality_profile_id or not root_folder_id:
+                        raise ValueError('Radarr quality profile and root folder must be configured to add movies')
+
+                    root_folders = await client.get_root_folders()
+                    root_folder_path = None
+                    for folder in root_folders:
+                        if str(folder.get('id')) == str(root_folder_id):
+                            root_folder_path = folder.get('path')
+                            break
+
+                    if not root_folder_path:
+                        raise ValueError('Selected Radarr root folder was not found')
+
+                    candidate = lookup[0]
+                    movie_payload = {
+                        'title': candidate.get('title'),
+                        'qualityProfileId': int(quality_profile_id),
+                        'tmdbId': candidate.get('tmdbId'),
+                        'year': candidate.get('year'),
+                        'titleSlug': candidate.get('titleSlug'),
+                        'images': candidate.get('images', []),
+                        'monitored': app.config['RADARR_AUTO_IMPORT'],
+                        'rootFolderPath': root_folder_path,
+                        'minimumAvailability': candidate.get('minimumAvailability', 'announced'),
+                        'addOptions': {
+                            'searchForMovie': True
+                        }
+                    }
+
+                    if candidate.get('imdbId'):
+                        movie_payload['imdbId'] = candidate.get('imdbId')
+
+                    if candidate.get('studio'):
+                        movie_payload['studio'] = candidate.get('studio')
+
+                    if candidate.get('tags'):
+                        movie_payload['tags'] = candidate.get('tags')
+
+                    if dry_run_flag:
+                        response['added'] = False
+                        response['message'] = 'Dry run enabled - movie would be added to Radarr'
+                    else:
+                        await client.add_movie(movie_payload)
+                        response['added'] = True
+                        response['message'] = 'Movie added to Radarr'
+
+            return response
+        finally:
+            await client.close()
+
+    try:
+        result = run_async_task(_radarr_check())
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+
+
+@app.route('/api/radarr/releases', methods=['POST'])
+def radarr_releases():
+    base_url = (app.config.get('RADARR_BASE_URL') or '').strip()
+    api_key = (app.config.get('RADARR_API_KEY') or '').strip()
+
+    if not base_url or not api_key:
+        return jsonify({'success': False, 'error': 'Radarr integration is not configured'}), 400
+
+    data = request.get_json(silent=True) or {}
+
+    def _to_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in ('true', '1', 'yes', 'on')
+        return bool(value)
+
+    tmdb_id = data.get('tmdb_id') or data.get('tmdbId')
+    imdb_id = data.get('imdb_id') or data.get('imdbId')
+    movie_id = data.get('movie_id') or data.get('movieId')
+    term = data.get('term')
+    refresh = _to_bool(data.get('refresh') or data.get('force_refresh') or data.get('forceRefresh', False))
+    filter_ipt = _to_bool(data.get('filter_ipt') or data.get('filterIpt', False))
+
+    if movie_id is not None:
+        movie_id = str(movie_id).strip() or None
+        if movie_id and movie_id.isdigit():
+            movie_id = int(movie_id)
+        else:
+            try:
+                movie_id = int(movie_id) if movie_id else None
+            except (TypeError, ValueError):
+                movie_id = None
+
+    if tmdb_id is not None:
+        tmdb_id = str(tmdb_id).strip() or None
+    if imdb_id is not None:
+        imdb_id = str(imdb_id).strip() or None
+    if term is not None:
+        term = str(term).strip() or None
+
+    if not any([movie_id, tmdb_id, imdb_id, term]):
+        return jsonify({'success': False, 'error': 'A TMDB ID, IMDB ID, Radarr movie ID, or search term is required'}), 400
+
+    async def _radarr_release_lookup() -> Dict[str, Any]:
+        client = RadarrClient(base_url, api_key)
+        try:
+            radarr_movie = None
+            resolved_movie_id = movie_id
+
+            if resolved_movie_id is None and (tmdb_id or imdb_id):
+                try:
+                    movie_matches = await client.get_movie(tmdb_id=tmdb_id, imdb_id=imdb_id)
+                    if movie_matches:
+                        radarr_movie = movie_matches[0]
+                        resolved_movie_id = radarr_movie.get('id')
+                except Exception as exc:
+                    log.error(f"Failed to fetch Radarr movie for release lookup: {exc}")
+
+            releases: List[Dict[str, Any]] = []
+
+            if refresh and resolved_movie_id:
+                try:
+                    await client.trigger_movie_search(int(resolved_movie_id))
+                except Exception as exc:
+                    log.warning(f"Radarr release refresh failed for movie {resolved_movie_id}: {exc}")
+
+            try:
+                releases = await client.search_releases(
+                    movie_id=int(resolved_movie_id) if resolved_movie_id else None,
+                    tmdb_id=tmdb_id,
+                    imdb_id=imdb_id,
+                    term=term,
+                )
+            except ValueError as exc:
+                raise RuntimeError(str(exc))
+
+            filter_summary: Dict[str, Any] = {'matches': 0, 'available_titles': 0}
+            ipt_snapshot: Dict[str, Any] = {}
+            filtered_releases = releases
+
+            if filter_ipt:
+                torrents, search_term, last_check = load_iptorrents_snapshot()
+                ipt_snapshot = {
+                    'search_term': search_term,
+                    'last_check': last_check,
+                    'torrents_loaded': len(torrents),
+                }
+
+                if torrents:
+                    filtered_releases, filter_summary = filter_releases_with_ipt(releases, torrents)
+                else:
+                    ipt_snapshot['message'] = 'No IPTorrents data available for filtering'
+
+            return {
+                'success': True,
+                'releases': filtered_releases,
+                'total_releases': len(releases),
+                'filtered_out': len(releases) - len(filtered_releases),
+                'filter_applied': filter_ipt,
+                'filter_summary': filter_summary,
+                'ipt_snapshot': ipt_snapshot,
+                'radarr_movie': radarr_movie,
+                'resolved_movie_id': resolved_movie_id,
+            }
+        finally:
+            await client.close()
+
+    try:
+        result = run_async_task(_radarr_release_lookup())
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
 
 @app.route('/api/reset-settings', methods=['POST'])
 def reset_settings():
@@ -1354,6 +2127,12 @@ def reset_settings():
         app.config['TELEGRAM_NOTIFY_DV'] = True
         app.config['TELEGRAM_NOTIFY_P7'] = True
         app.config['TELEGRAM_NOTIFY_ATMOS'] = True
+        app.config['RADARR_BASE_URL'] = ""
+        app.config['RADARR_API_KEY'] = ""
+        app.config['RADARR_ROOT_FOLDER_ID'] = ""
+        app.config['RADARR_QUALITY_PROFILE_ID'] = ""
+        app.config['RADARR_AUTO_IMPORT'] = False
+        app.config['RADARR_DRY_RUN'] = True
         app.config['SETUP_COMPLETED'] = False
         app.config['LAST_SCAN_RESULTS'] = {'total': 0, 'dv_count': 0, 'p7_count': 0, 'atmos_count': 0}
         
@@ -1393,9 +2172,20 @@ def reset_settings():
                 'scan_progress': 0,
                 'status': 'idle'
             }
-            
+
             state.last_collection_changes = {'added': [], 'removed': []}
-        
+            state.radarr_stats = {
+                'status': 'disabled',
+                'message': 'Radarr integration not configured',
+                'matched': 0,
+                'monitored': 0,
+                'total_known': 0,
+                'movies_in_radarr': 0,
+                'last_checked': None,
+                'root_folders': [],
+                'quality_profiles': []
+            }
+
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
