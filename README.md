@@ -105,6 +105,16 @@ nano .env
 docker-compose up -d
 ```
 
+If you want to validate connectivity to Plex before starting the stack you can run the bundled helper script:
+
+```bash
+PLEX_URL=http://your-plex-server:32400 \
+PLEX_TOKEN=your_plex_token_here \
+./check-plex.sh
+```
+
+The script exits with a non-zero status and prints a descriptive error if the Plex server cannot be reached.
+
 ### Manual Installation
 
 1. Install Python 3.10+ and Node.js 14+
