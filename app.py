@@ -13,7 +13,7 @@ from flask_compress import Compress
 from plexapi.server import PlexServer
 from scanner import PlexDVScanner, MovieDatabase
 from integrations.radarr import RadarrClient
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 import sys
 import subprocess
 
@@ -230,19 +230,47 @@ def _normalize_release_name(value: Optional[str]) -> str:
     return re.sub(r'[^a-z0-9]+', '', value.lower())
 
 
+def _get_iptscanner_dirs() -> List[str]:
+    """Return possible IPT scanner data directories, preferring DATA_DIR."""
+
+    script_root = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(DATA_DIR, 'iptscanner'),
+        os.path.join(script_root, 'iptscanner'),
+    ]
+
+    resolved: List[str] = []
+    seen: Set[str] = set()
+
+    for path in candidates:
+        norm = os.path.normpath(path)
+        if norm not in seen:
+            resolved.append(norm)
+            seen.add(norm)
+
+    return resolved
+
+
 def load_iptorrents_snapshot() -> Tuple[List[Dict[str, Any]], Optional[str], Optional[str]]:
     """Load the latest IPTorrents search snapshot for filtering."""
 
-    iptscanner_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
-    config_path = os.path.join(iptscanner_dir, 'config.json')
-    js_data_path = os.path.join(iptscanner_dir, 'known_torrents.json')
-    app_data_dir = os.path.join(iptscanner_dir, 'data')
-    app_data_path = os.path.join(app_data_dir, 'torrents.json')
+    iptscanner_dirs = _get_iptscanner_dirs()
+
+    config_path: Optional[str] = None
+    for directory in iptscanner_dirs:
+        candidate = os.path.join(directory, 'config.json')
+        if os.path.exists(candidate):
+            config_path = candidate
+            break
+
+    if config_path is None and iptscanner_dirs:
+        # Fall back to the first candidate so error messages remain helpful
+        config_path = os.path.join(iptscanner_dirs[0], 'config.json')
 
     search_term = "BL+EL+RPU"
     last_check = None
 
-    if os.path.exists(config_path):
+    if config_path and os.path.exists(config_path):
         try:
             with open(config_path, 'r', encoding='utf-8') as config_file:
                 config = json.load(config_file)
@@ -253,7 +281,22 @@ def load_iptorrents_snapshot() -> Tuple[List[Dict[str, Any]], Optional[str], Opt
 
     torrents: List[Dict[str, Any]] = []
 
-    for path in (js_data_path, app_data_path):
+    torrent_candidates: List[str] = []
+    seen_paths: Set[str] = set()
+
+    for directory in iptscanner_dirs:
+        for relative in (
+            'known_torrents.json',
+            'torrents.json',
+            os.path.join('data', 'known_torrents.json'),
+            os.path.join('data', 'torrents.json'),
+        ):
+            candidate_path = os.path.normpath(os.path.join(directory, relative))
+            if candidate_path not in seen_paths:
+                torrent_candidates.append(candidate_path)
+                seen_paths.add(candidate_path)
+
+    for path in torrent_candidates:
         if os.path.exists(path):
             try:
                 with open(path, 'r', encoding='utf-8') as torrent_file:
@@ -2350,29 +2393,38 @@ def iptscanner_torrents():
     try:
         # If the check_only parameter is set, just check if cookies exist
         check_only = request.args.get('check_only', 'false').lower() == 'true'
-        
-        # Get data directory
-        data_dir = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
-        cookies_file = os.path.join(data_dir, 'iptscanner', 'cookies.json')
-        
+
+        iptscanner_dirs = _get_iptscanner_dirs()
+
+        cookies_file: Optional[str] = None
+        for directory in iptscanner_dirs:
+            candidate = os.path.join(directory, 'cookies.json')
+            if os.path.exists(candidate):
+                cookies_file = candidate
+                break
+
+        if cookies_file is None:
+            base_dir = iptscanner_dirs[0] if iptscanner_dirs else os.path.join(DATA_DIR, 'iptscanner')
+            cookies_file = os.path.join(base_dir, 'cookies.json')
+
         # Check if cookies file exists
         if not os.path.exists(cookies_file):
             return jsonify({'error': 'No cookies file found. Please add your IPTorrents cookies.'})
-        
+
         # If check_only is true, just return success
         if check_only:
             return jsonify({'success': True, 'message': 'Cookies file exists'})
         
         # Rest of the function logic to get torrents
         refresh = request.args.get('refresh', 'false').lower() == 'true'
-        
+
         if refresh:
             app.logger.info("Force refresh requested for IPTorrents data")
             # Run the JS script to get fresh data
             iptscanner_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
             js_script = os.path.join(iptscanner_dir, 'monitor-iptorrents.js')
             cmd = ['node', js_script, '--one-time']
-            
+
             try:
                 app.logger.info(f"Running command: {' '.join(cmd)}")
                 process = subprocess.Popen(
@@ -2391,12 +2443,21 @@ def iptscanner_torrents():
                     app.logger.info(f"Refresh stdout: {stdout[:200]}...")
                 if stderr:
                     app.logger.error(f"Refresh stderr: {stderr[:200]}...")
-                    
+
                 app.logger.info("Refresh completed")
-                
+
                 # Update lastUpdateTime in config file
-                config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'config.json')
-                if os.path.exists(config_path):
+                config_path: Optional[str] = None
+                for directory in iptscanner_dirs:
+                    candidate = os.path.join(directory, 'config.json')
+                    if os.path.exists(candidate):
+                        config_path = candidate
+                        break
+
+                if config_path is None and iptscanner_dirs:
+                    config_path = os.path.join(iptscanner_dirs[0], 'config.json')
+
+                if config_path and os.path.exists(config_path):
                     try:
                         with open(config_path, 'r') as f:
                             config = json.load(f)
@@ -2407,112 +2468,17 @@ def iptscanner_torrents():
                         app.logger.error(f"Error updating config after refresh: {str(e)}")
             except Exception as e:
                 app.logger.error(f"Error during refresh: {str(e)}")
-        
-        # First check for torrents in the JS script's output directory
-        js_data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'known_torrents.json')
-        
-        # Directory for our app's data
-        app_data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'data')
-        os.makedirs(app_data_dir, exist_ok=True)
-        
-        # Also check our app's data directory
-        app_data_path = os.path.join(app_data_dir, 'torrents.json')
-        
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'config.json')
-        last_check = None
-        search_term = "BL+EL+RPU"
-        
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-                last_check = config.get('lastUpdateTime')
-                search_term = config.get('iptorrents', {}).get('searchTerm', search_term)
-                
-                # If no lastUpdateTime in config, set it now
-                if not last_check:
-                    config['lastUpdateTime'] = datetime.now().isoformat()
-                    last_check = config['lastUpdateTime']
-                    with open(config_path, 'w') as f:
-                        json.dump(config, f, indent=4)
-            except Exception as e:
-                app.logger.error(f"Error reading config for torrents: {str(e)}")
-        
-        # Check both possible locations for the torrents data
-        torrents = []
-        
-        # First try the JS output file
-        if os.path.exists(js_data_path):
-            try:
-                with open(js_data_path, 'r') as f:
-                    js_data = json.load(f)
-                    if isinstance(js_data, list):
-                        torrents = js_data
-                    else:
-                        # If it's just the known torrent IDs, we need to handle differently
-                        torrents = []
-                app.logger.info(f"Loaded {len(torrents)} torrents from JavaScript output file")
-            except Exception as e:
-                app.logger.error(f"Error reading JavaScript torrents file: {str(e)}")
-        
-        # If that fails, try our app's data directory
-        if not torrents and os.path.exists(app_data_path):
-            try:
-                with open(app_data_path, 'r') as f:
-                    torrents = json.load(f)
-                app.logger.info(f"Loaded {len(torrents)} torrents from app data directory")
-            except Exception as e:
-                app.logger.error(f"Error reading app torrents file: {str(e)}")
-        
-        # If we still have no torrents, return empty list
+
+        torrents, search_term, last_check = load_iptorrents_snapshot()
+
         if not torrents:
-            app.logger.warning("No torrents found in either location")
+            app.logger.warning("No torrents found in IPTorrents snapshot")
             return jsonify({
                 "torrents": [],
                 "lastCheck": last_check,
                 "searchTerm": search_term
             })
-        
-        # If torrents is a List, sort and return it
-        if isinstance(torrents, list):
-            # Parse time strings to ensure correct sorting
-            for torrent in torrents:
-                # Get added text and convert to a timestamp for sorting
-                added_text = torrent.get('added', '')
-                
-                # Set a default sort time if none exists
-                if 'sortTime' not in torrent:
-                    # Parse the time string
-                    if 'min ago' in added_text:
-                        mins = float(added_text.split(' ')[0])
-                        torrent['sortTime'] = time.time() - (mins * 60)
-                    elif 'hr ago' in added_text:
-                        hours = float(added_text.split(' ')[0])
-                        torrent['sortTime'] = time.time() - (hours * 3600)
-                    elif 'day ago' in added_text:
-                        days = float(added_text.split(' ')[0])
-                        torrent['sortTime'] = time.time() - (days * 86400)
-                    elif 'wk ago' in added_text:
-                        weeks = float(added_text.split(' ')[0])
-                        torrent['sortTime'] = time.time() - (weeks * 604800)
-                    else:
-                        torrent['sortTime'] = 0
-            
-            # Sort torrents by isNew and then by added date
-            sorted_torrents = sorted(
-                torrents, 
-                key=lambda t: (0 if t.get('isNew', False) else 1, -(t.get('sortTime', 0) or 0)),
-                reverse=False  # Don't reverse since we're using negative sortTime
-            )
-            
-            return jsonify({
-                "torrents": sorted_torrents,
-                "lastCheck": last_check,
-                "searchTerm": search_term
-            })
-        
-        # If we get here, the format is unexpected - just return it as-is
-        app.logger.warning(f"Unexpected torrents format: {type(torrents)}")
+
         return jsonify({
             "torrents": torrents,
             "lastCheck": last_check,
