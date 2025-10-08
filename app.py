@@ -29,6 +29,7 @@ compress.init_app(app)
 
 # Get data directory from environment variable or use default
 DATA_DIR = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 log.info(f"Using data directory: {DATA_DIR}")
 
 # Create exports directory if it doesn't exist
@@ -112,6 +113,35 @@ def _validate_and_normalize_plex_url(raw_url: str) -> str:
         raise ValueError("Unsupported Plex URL scheme. Use http:// or https://.")
 
     return cleaned
+
+
+def _iptscanner_storage_dir() -> str:
+    """Return the persistent IPT scanner storage directory, ensuring it exists."""
+    storage_dir = os.path.join(DATA_DIR, 'iptscanner')
+    os.makedirs(storage_dir, exist_ok=True)
+    os.makedirs(os.path.join(storage_dir, 'data'), exist_ok=True)
+    os.makedirs(os.path.join(storage_dir, 'profile'), exist_ok=True)
+    return storage_dir
+
+
+def _iptscanner_config_path() -> str:
+    return os.path.join(_iptscanner_storage_dir(), 'config.json')
+
+
+def _iptscanner_cookies_path() -> str:
+    return os.path.join(_iptscanner_storage_dir(), 'cookies.json')
+
+
+def _iptscanner_known_torrents_path() -> str:
+    return os.path.join(_iptscanner_storage_dir(), 'data', 'known_torrents.json')
+
+
+def _iptscanner_profile_dir() -> str:
+    return os.path.join(_iptscanner_storage_dir(), 'profile')
+
+
+def _iptscanner_script_dir() -> str:
+    return os.path.join(APP_ROOT, 'iptscanner')
 
 
 def _begin_background_operation(status_label: str) -> None:
@@ -1452,19 +1482,19 @@ def reset_settings():
 @app.route('/api/iptscanner/settings', methods=['GET', 'POST'])
 def iptscanner_settings():
     try:
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'config.json')
-        
-        # Create the config if it doesn't exist
-        if not os.path.exists(os.path.dirname(config_path)):
-            os.makedirs(os.path.dirname(config_path))
-        
+        storage_dir = _iptscanner_storage_dir()
+        config_path = _iptscanner_config_path()
+        cookies_path = _iptscanner_cookies_path()
+        data_path = _iptscanner_known_torrents_path()
+        profile_dir = _iptscanner_profile_dir()
+
         # Default config
         default_config = {
             "iptorrents": {
                 "url": "https://iptorrents.com/login",
                 "searchUrl": "https://iptorrents.com/t?q=BL%2BEL%2BRPU&qf=adv#torrents",
                 "searchTerm": "BL+EL+RPU",
-                "cookiePath": ""
+                "cookiePath": cookies_path
             },
             "telegram": {
                 "enabled": False,
@@ -1472,13 +1502,13 @@ def iptscanner_settings():
                 "chatId": ""
             },
             "checkInterval": "0 */2 * * *",
-            "dataPath": os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'data', 'known_torrents.json'),
+            "dataPath": data_path,
             "configPath": config_path,
-            "cookiesPath": os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'cookies.json'),
+            "cookiesPath": cookies_path,
             "headless": True,
             "debug": False,
             "loginComplete": False,
-            "userDataDir": os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'browser-profile'),
+            "userDataDir": profile_dir,
             "lastUpdateTime": None
         }
         
@@ -1486,6 +1516,33 @@ def iptscanner_settings():
         if not os.path.exists(config_path):
             with open(config_path, 'w') as f:
                 json.dump(default_config, f, indent=4)
+        else:
+            # Align existing config paths with storage directory
+            try:
+                with open(config_path, 'r') as f:
+                    existing_config = json.load(f)
+                paths_updated = False
+                if existing_config.get("dataPath") != data_path:
+                    existing_config["dataPath"] = data_path
+                    paths_updated = True
+                if existing_config.get("configPath") != config_path:
+                    existing_config["configPath"] = config_path
+                    paths_updated = True
+                if existing_config.get("cookiesPath") != cookies_path:
+                    existing_config["cookiesPath"] = cookies_path
+                    paths_updated = True
+                if existing_config.get("userDataDir") != profile_dir:
+                    existing_config["userDataDir"] = profile_dir
+                    paths_updated = True
+                iptor = existing_config.setdefault("iptorrents", {})
+                if iptor.get("cookiePath") != cookies_path:
+                    iptor["cookiePath"] = cookies_path
+                    paths_updated = True
+                if paths_updated:
+                    with open(config_path, 'w') as f:
+                        json.dump(existing_config, f, indent=4)
+            except Exception as path_exc:
+                app.logger.warning(f"Unable to normalise IPTScanner config paths: {path_exc}")
         
         if request.method == 'GET':
             # Read and return current settings
@@ -1577,14 +1634,27 @@ def iptscanner_settings():
                             }
                         ]
                         
-                        cookies_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'cookies.json')
                         with open(cookies_path, 'w') as f:
                             json.dump(cookies, f)
                             app.logger.info(f"Updated cookies")
+                    else:
+                        # If values are empty, clear login flag but keep cookie path aligned
+                        config.pop("uid", None)
+                        config.pop("pass", None)
+                        config["loginComplete"] = False
+                else:
+                    config.setdefault("iptorrents", {})["cookiePath"] = cookies_path
                 
                 # Update Radarr settings if provided
                 if "radarr" in new_config:
                     config["radarr"] = new_config["radarr"]
+                
+                # Ensure critical paths stay aligned with storage directory
+                config["dataPath"] = data_path
+                config["configPath"] = config_path
+                config["cookiesPath"] = cookies_path
+                config["userDataDir"] = profile_dir
+                config.setdefault("iptorrents", {})["cookiePath"] = cookies_path
                 
                 # Write back the updated config
                 with open(config_path, 'w') as f:
@@ -1609,9 +1679,8 @@ def iptscanner_torrents():
         # If the check_only parameter is set, just check if cookies exist
         check_only = request.args.get('check_only', 'false').lower() == 'true'
         
-        # Get data directory
-        data_dir = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
-        cookies_file = os.path.join(data_dir, 'iptscanner', 'cookies.json')
+        # Use persistent IPT scanner storage
+        cookies_file = _iptscanner_cookies_path()
         
         # Check if cookies file exists
         if not os.path.exists(cookies_file):
@@ -1627,7 +1696,7 @@ def iptscanner_torrents():
         if refresh:
             app.logger.info("Force refresh requested for IPTorrents data")
             # Run the JS script to get fresh data
-            iptscanner_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
+            iptscanner_dir = _iptscanner_script_dir()
             js_script = os.path.join(iptscanner_dir, 'monitor-iptorrents.js')
             cmd = ['node', js_script, '--one-time']
             
@@ -1653,7 +1722,7 @@ def iptscanner_torrents():
                 app.logger.info("Refresh completed")
                 
                 # Update lastUpdateTime in config file
-                config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'config.json')
+                config_path = _iptscanner_config_path()
                 if os.path.exists(config_path):
                     try:
                         with open(config_path, 'r') as f:
@@ -1666,17 +1735,13 @@ def iptscanner_torrents():
             except Exception as e:
                 app.logger.error(f"Error during refresh: {str(e)}")
         
-        # First check for torrents in the JS script's output directory
-        js_data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'known_torrents.json')
-        
-        # Directory for our app's data
-        app_data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'data')
+        storage_dir = _iptscanner_storage_dir()
+        primary_data_path = _iptscanner_known_torrents_path()
+        legacy_js_data_path = os.path.join(_iptscanner_script_dir(), 'known_torrents.json')
+        app_data_dir = os.path.join(storage_dir, 'data')
         os.makedirs(app_data_dir, exist_ok=True)
-        
-        # Also check our app's data directory
         app_data_path = os.path.join(app_data_dir, 'torrents.json')
-        
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner', 'config.json')
+        config_path = _iptscanner_config_path()
         last_check = None
         search_term = "BL+EL+RPU"
         
@@ -1696,22 +1761,34 @@ def iptscanner_torrents():
             except Exception as e:
                 app.logger.error(f"Error reading config for torrents: {str(e)}")
         
-        # Check both possible locations for the torrents data
         torrents = []
         
-        # First try the JS output file
-        if os.path.exists(js_data_path):
+        # First try the shared storage data written by the worker
+        if os.path.exists(primary_data_path):
             try:
-                with open(js_data_path, 'r') as f:
+                with open(primary_data_path, 'r') as f:
                     js_data = json.load(f)
                     if isinstance(js_data, list):
                         torrents = js_data
                     else:
                         # If it's just the known torrent IDs, we need to handle differently
                         torrents = []
-                app.logger.info(f"Loaded {len(torrents)} torrents from JavaScript output file")
+                app.logger.info(f"Loaded {len(torrents)} torrents from shared IPT scanner data")
             except Exception as e:
-                app.logger.error(f"Error reading JavaScript torrents file: {str(e)}")
+                app.logger.error(f"Error reading shared IPT scanner data: {str(e)}")
+        
+        # Fall back to the legacy script output file if needed
+        if not torrents and os.path.exists(legacy_js_data_path):
+            try:
+                with open(legacy_js_data_path, 'r') as f:
+                    js_data = json.load(f)
+                    if isinstance(js_data, list):
+                        torrents = js_data
+                    else:
+                        torrents = js_data.get('torrents') or []
+                app.logger.info(f"Loaded {len(torrents)} torrents from legacy JavaScript output file")
+            except Exception as e:
+                app.logger.error(f"Error reading legacy JavaScript torrents file: {str(e)}")
         
         # If that fails, try our app's data directory
         if not torrents and os.path.exists(app_data_path):
@@ -1793,15 +1870,9 @@ def test_ipt_login():
         if not uid or not passkey:
             return jsonify({'success': False, 'error': 'UID and passkey are required'}), 400
 
-        # Get data directory from environment variable or use default
-        data_dir = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
-        iptscanner_dir = os.path.join(data_dir, 'iptscanner')
-        
-        # Create directory if it doesn't exist
-        os.makedirs(iptscanner_dir, exist_ok=True)
-        
-        # Create the cookies.json file
-        cookies_path = os.path.join(iptscanner_dir, 'cookies.json')
+        storage_dir = _iptscanner_storage_dir()
+        cookies_path = _iptscanner_cookies_path()
+        config_path = _iptscanner_config_path()
         
         # Create cookies in proper format for puppeteer
         cookies = [
@@ -1827,26 +1898,58 @@ def test_ipt_login():
             json.dump(cookies, f, indent=4)
         
         # Update the config.json file as well
-        config_path = os.path.join(iptscanner_dir, 'config.json')
-        if os.path.exists(config_path):
-            try:
+        default_config = {
+            "iptorrents": {
+                "url": "https://iptorrents.com/login",
+                "searchUrl": "https://iptorrents.com/t?q=BL%2BEL%2BRPU&qf=adv#torrents",
+                "searchTerm": "BL+EL+RPU",
+                "cookiePath": cookies_path
+            },
+            "telegram": {
+                "enabled": False,
+                "botToken": "",
+                "chatId": ""
+            },
+            "checkInterval": "0 */2 * * *",
+            "dataPath": _iptscanner_known_torrents_path(),
+            "configPath": config_path,
+            "cookiesPath": cookies_path,
+            "userDataDir": _iptscanner_profile_dir(),
+            "loginComplete": True,
+            "uid": uid,
+            "pass": passkey
+        }
+
+        try:
+            if os.path.exists(config_path):
                 with open(config_path, 'r') as f:
                     config = json.load(f)
-                
-                # Update config with credentials
-                config['uid'] = uid
-                config['pass'] = passkey
-                config['loginComplete'] = True
-                config['cookiesPath'] = cookies_path
-                
-                with open(config_path, 'w') as f:
-                    json.dump(config, f, indent=4)
-                    app.logger.info("Updated config with credentials")
-            except Exception as e:
-                app.logger.error(f"Error updating config: {str(e)}")
+            else:
+                config = default_config
+        except Exception as e:
+            app.logger.error(f"Error reading existing config: {str(e)}")
+            config = default_config
+
+        ipt_section = config.setdefault('iptorrents', {})
+        ipt_section.setdefault('url', default_config['iptorrents']['url'])
+        search_term = ipt_section.setdefault('searchTerm', default_config['iptorrents']['searchTerm'])
+        ipt_section['searchUrl'] = f"https://iptorrents.com/t?q={search_term}&qf=adv#torrents"
+        ipt_section['cookiePath'] = cookies_path
+
+        config['uid'] = uid
+        config['pass'] = passkey
+        config['loginComplete'] = True
+        config['cookiesPath'] = cookies_path
+        config['dataPath'] = _iptscanner_known_torrents_path()
+        config['configPath'] = config_path
+        config['userDataDir'] = _iptscanner_profile_dir()
+
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=4)
+            app.logger.info("Updated config with credentials")
         
         # Run the JS login test script path
-        script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
+        script_dir = _iptscanner_script_dir()
         js_script = os.path.join(script_dir, 'login-test.js')
         
         # Create a simple test script if it doesn't exist
@@ -2055,21 +2158,14 @@ def run_ipt_scanner(config=None):
     try:
         app.logger.info("Running IPT scanner...")
         
-        # Get data directory from environment variable or use default
-        data_dir = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
-        iptscanner_dir = os.path.join(data_dir, 'iptscanner')
-        
-        # Create the data directory if it doesn't exist
-        os.makedirs(iptscanner_dir, exist_ok=True)
-        
-        # Get the path to the IPT scanner script
-        script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
+        # Resolve storage and script locations
+        storage_dir = _iptscanner_storage_dir()
+        script_dir = _iptscanner_script_dir()
         script_path = os.path.join(script_dir, 'monitor-iptorrents.js')
         
         app.logger.info(f"Script directory: {script_dir}")
         app.logger.info(f"Script path: {script_path}")
-        app.logger.info(f"Data directory: {data_dir}")
-        app.logger.info(f"IPT scanner directory: {iptscanner_dir}")
+        app.logger.info(f"Storage directory: {storage_dir}")
         
         # Check if the script exists
         if not os.path.exists(script_path):
@@ -2077,7 +2173,7 @@ def run_ipt_scanner(config=None):
             return False
         
         # Check and log cookie file existence
-        cookies_path = os.path.join(iptscanner_dir, 'cookies.json')
+        cookies_path = _iptscanner_cookies_path()
         app.logger.info(f"Cookies path: {cookies_path}, exists: {os.path.exists(cookies_path)}")
         
         if os.path.exists(cookies_path):
@@ -2095,14 +2191,14 @@ def run_ipt_scanner(config=None):
             
             # Add the config path if provided
             if config:
-                config_path = os.path.join(iptscanner_dir, 'config.json')
+                config_path = _iptscanner_config_path()
                 app.logger.info(f"Writing config to: {config_path}")
                 with open(config_path, 'w') as f:
                     json.dump(config, f, indent=4)
                 cmd.append(config_path)
             
             # Verify config file existence
-            config_path = os.path.join(iptscanner_dir, 'config.json')
+            config_path = _iptscanner_config_path()
             app.logger.info(f"Config path: {config_path}, exists: {os.path.exists(config_path)}")
             
             if os.path.exists(config_path):
@@ -2177,17 +2273,11 @@ def init_iptscanner():
     try:
         app.logger.info("Initializing IPT scanner...")
         
-        # Get data directory from environment variable or use default
-        data_dir = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
-        iptscanner_dir = os.path.join(data_dir, 'iptscanner')
-        
-        # Create the iptscanner directory if it doesn't exist
-        os.makedirs(iptscanner_dir, exist_ok=True)
-        os.makedirs(os.path.join(iptscanner_dir, 'data'), exist_ok=True)
-        os.makedirs(os.path.join(iptscanner_dir, 'profile'), exist_ok=True)
-        
-        # Ensure config.json exists
-        config_path = os.path.join(iptscanner_dir, 'config.json')
+        iptscanner_dir = _iptscanner_storage_dir()
+        config_path = _iptscanner_config_path()
+        cookies_path = _iptscanner_cookies_path()
+        data_path = _iptscanner_known_torrents_path()
+        profile_dir = _iptscanner_profile_dir()
         
         if not os.path.exists(config_path):
             app.logger.info(f"Creating default IPT scanner config at {config_path}")
@@ -2196,7 +2286,7 @@ def init_iptscanner():
                     "url": "https://iptorrents.com/login",
                     "searchUrl": "https://iptorrents.com/t?q=BL%2BEL%2BRPU&qf=adv#torrents",
                     "searchTerm": "BL+EL+RPU",
-                    "cookiePath": os.path.join(iptscanner_dir, 'cookies.json')
+                    "cookiePath": cookies_path
                 },
                 "telegram": {
                     "enabled": False,
@@ -2204,13 +2294,13 @@ def init_iptscanner():
                     "chatId": ""
                 },
                 "checkInterval": "0 */2 * * *",
-                "dataPath": os.path.join(iptscanner_dir, 'data', 'known_torrents.json'),
+                "dataPath": data_path,
                 "configPath": config_path,
-                "cookiesPath": os.path.join(iptscanner_dir, 'cookies.json'),
+                "cookiesPath": cookies_path,
                 "headless": True,
                 "debug": False,
                 "loginComplete": False,
-                "userDataDir": os.path.join(iptscanner_dir, 'profile'),
+                "userDataDir": profile_dir,
                 "lastUpdateTime": None
             }
             
@@ -2249,13 +2339,10 @@ def test_run_iptscanner():
     try:
         app.logger.info("Manual test run of IPT scanner triggered")
         
-        # Get data directory
-        data_dir = os.environ.get('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
-        iptscanner_dir = os.path.join(data_dir, 'iptscanner')
-        config_path = os.path.join(iptscanner_dir, 'config.json')
+        config_path = _iptscanner_config_path()
+        script_dir = _iptscanner_script_dir()
         
         # Check if node_modules exist and install if needed
-        script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'iptscanner')
         node_modules_path = os.path.join(script_dir, 'node_modules')
         
         if not os.path.exists(node_modules_path):
