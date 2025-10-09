@@ -39,12 +39,51 @@ class MovieDatabase:
                 extra_data TEXT
             )
             ''')
-            
+
             # Create indices for faster lookups
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_title ON movies (title)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_dv_profile ON movies (dv_profile)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_dv_fel ON movies (dv_fel)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_has_atmos ON movies (has_atmos)')
+
+            # Create pending downloads table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS pending_downloads (
+                request_id TEXT PRIMARY KEY,
+                movie_title TEXT,
+                year INTEGER,
+                torrent_url TEXT,
+                target_folder TEXT,
+                quality_type TEXT,
+                status TEXT,
+                telegram_message_id INTEGER,
+                download_data TEXT,
+                created_at TEXT,
+                expires_at TEXT,
+                approved_at TEXT,
+                completed_at TEXT
+            )
+            ''')
+
+            # Create download history table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS download_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT,
+                movie_title TEXT,
+                quality_type TEXT,
+                torrent_hash TEXT,
+                status TEXT,
+                started_at TEXT,
+                completed_at TEXT
+            )
+            ''')
+
+            # Create indices for downloads
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_downloads (status)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_pending_created ON pending_downloads (created_at)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_history_movie ON download_history (movie_title)')
+
             conn.commit()
     
     def get_connection(self):
@@ -100,9 +139,124 @@ class MovieDatabase:
         """Get all TrueHD Atmos movies"""
         with self.get_connection() as conn:
             cursor = conn.execute('''
-            SELECT * FROM movies 
+            SELECT * FROM movies
             WHERE has_atmos = 1
             ''')
+            return [dict(row) for row in cursor.fetchall()]
+
+    # Download management methods
+    def store_pending_download(self, request_id: str, download_data: Dict):
+        """Store pending download request"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+            INSERT INTO pending_downloads (
+                request_id, movie_title, year, torrent_url, target_folder,
+                quality_type, status, download_data, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                request_id,
+                download_data.get('movie_title'),
+                download_data.get('year'),
+                download_data.get('torrent_url'),
+                download_data.get('target_folder'),
+                download_data.get('quality_type'),
+                'pending',
+                json.dumps(download_data),
+                download_data.get('created_at', datetime.now().isoformat())
+            ))
+            conn.commit()
+
+    def get_pending_download(self, request_id: str) -> Optional[Dict]:
+        """Get pending download by request ID"""
+        with self.get_connection() as conn:
+            cursor = conn.execute('''
+            SELECT download_data FROM pending_downloads
+            WHERE request_id = ?
+            ''', (request_id,))
+            result = cursor.fetchone()
+            if result and result['download_data']:
+                try:
+                    return json.loads(result['download_data'])
+                except:
+                    pass
+            return None
+
+    def get_all_pending_downloads(self):
+        """Get all pending downloads"""
+        with self.get_connection() as conn:
+            cursor = conn.execute('''
+            SELECT * FROM pending_downloads
+            WHERE status = 'pending'
+            ORDER BY created_at DESC
+            ''')
+            return [dict(row) for row in cursor.fetchall()]
+
+    def mark_download_started(self, request_id: str, torrent_hash: Optional[str]):
+        """Mark download as started"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+
+            # Update pending download
+            cursor.execute('''
+            UPDATE pending_downloads
+            SET status = 'downloading', approved_at = ?
+            WHERE request_id = ?
+            ''', (datetime.now().isoformat(), request_id))
+
+            # Add to history
+            pending = self.get_pending_download(request_id)
+            if pending:
+                cursor.execute('''
+                INSERT INTO download_history (
+                    request_id, movie_title, quality_type, torrent_hash, status, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    request_id,
+                    pending.get('movie_title'),
+                    pending.get('quality_type'),
+                    torrent_hash,
+                    'downloading',
+                    datetime.now().isoformat()
+                ))
+
+            conn.commit()
+
+    def mark_download_completed(self, request_id: str):
+        """Mark download as completed"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            now = datetime.now().isoformat()
+
+            cursor.execute('''
+            UPDATE pending_downloads
+            SET status = 'completed', completed_at = ?
+            WHERE request_id = ?
+            ''', (now, request_id))
+
+            cursor.execute('''
+            UPDATE download_history
+            SET status = 'completed', completed_at = ?
+            WHERE request_id = ?
+            ''', (now, request_id))
+
+            conn.commit()
+
+    def delete_pending_download(self, request_id: str):
+        """Delete pending download (after decline or expiry)"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM pending_downloads WHERE request_id = ?', (request_id,))
+            conn.commit()
+
+    def get_download_history(self, limit: int = 50):
+        """Get recent download history"""
+        with self.get_connection() as conn:
+            cursor = conn.execute('''
+            SELECT * FROM download_history
+            ORDER BY started_at DESC
+            LIMIT ?
+            ''', (limit,))
             return [dict(row) for row in cursor.fetchall()]
 
 

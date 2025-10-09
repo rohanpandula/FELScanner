@@ -60,6 +60,7 @@ fetch-debug.html
 felscanner-data/
 iptradar/*.html
 iptradar/*.png
+metadata-cache.json
 
 # Docker
 *.pem

@@ -82,22 +82,297 @@
                     </div>
                 </section>
 
+                <section class="rounded-3xl border border-slate-800 bg-slateglass p-6 backdrop-blur-xl">
+                    <div class="flex flex-wrap items-center justify-between gap-4">
+                        <div>
+                            <h3 class="text-xl font-semibold text-white">Metadata Explorer</h3>
+                            <p class="text-sm text-slate-400">Browse cached Plex metadata and pull live ffprobe details when you open a movie.</p>
+                        </div>
+                        <div class="flex items-center gap-3 text-xs text-slate-400">
+                            <span v-if="metadata.summaryRefreshedAt">Cache {{ formatRelative(metadata.summaryRefreshedAt) }}</span>
+                            <button @click="refreshMetadataList(true)" :disabled="metadataLoading.list" class="rounded-md border border-slate-700 px-3 py-1.5 font-medium text-slate-200 hover:bg-slate-900/70 disabled:cursor-not-allowed disabled:opacity-40">Refresh cache</button>
+                        </div>
+                    </div>
+                    <div class="mt-6 grid gap-6 xl:grid-cols-5">
+                        <div class="xl:col-span-2 space-y-4">
+                            <div class="relative">
+                                <input v-model="movieSearch" type="search" placeholder="Search movies…" class="w-full rounded-xl border border-slate-800 bg-slate-900/70 pl-10 pr-4 py-2.5 text-sm text-slate-200 placeholder:text-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-4.35-4.35M9.5 17A7.5 7.5 0 109.5 2a7.5 7.5 0 000 15z" />
+                                </svg>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-wide text-slate-400">
+                                <button @click="cycleDvFilter" :class="dvFilterActive ? 'border-indigo-500/60 bg-indigo-500/10 text-indigo-200' : 'border-slate-700 text-slate-400 hover:bg-slate-900'" class="rounded-md border px-3 py-1 font-semibold transition">{{ dvFilterLabel }}</button>
+                                <button @click="metadataFilters.atmosOnly = !metadataFilters.atmosOnly" :class="metadataFilters.atmosOnly ? 'bg-teal-500/20 text-teal-200 border-teal-500/50' : 'border-slate-700 text-slate-400 hover:bg-slate-900'" class="rounded-md border px-3 py-1 font-semibold transition">Atmos</button>
+                                <div class="flex items-center gap-1">
+                                    <span class="text-slate-500">Resolution</span>
+                                    <button @click="metadataFilters.resolution = 'all'" :class="metadataFilters.resolution === 'all' ? 'bg-slate-100/10 text-slate-200 border-slate-100/40' : 'border-slate-700 text-slate-400 hover:bg-slate-900'" class="rounded-md border px-2 py-1 font-semibold transition">All</button>
+                                    <button @click="metadataFilters.resolution = '4k'" :class="metadataFilters.resolution === '4k' ? 'bg-slate-100/10 text-slate-200 border-slate-100/40' : 'border-slate-700 text-slate-400 hover:bg-slate-900'" class="rounded-md border px-2 py-1 font-semibold transition">4K</button>
+                                    <button @click="metadataFilters.resolution = '1080p'" :class="metadataFilters.resolution === '1080p' ? 'bg-slate-100/10 text-slate-200 border-slate-100/40' : 'border-slate-700 text-slate-400 hover:bg-slate-900'" class="rounded-md border px-2 py-1 font-semibold transition">1080p</button>
+                                </div>
+                                <label class="ml-auto flex items-center gap-2 text-slate-500">
+                                    <span>Sort</span>
+                                    <select v-model="metadataFilters.sort" class="rounded-md border border-slate-800 bg-slate-900/70 px-2 py-1 text-[11px] text-slate-300 focus:border-indigo-500 focus:outline-none">
+                                        <option value="title">Title</option>
+                                        <option value="dv">Dolby Vision first</option>
+                                        <option value="resolution">Resolution</option>
+                                        <option value="recent">Recently updated</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <div class="max-h-[28rem] space-y-2 overflow-y-auto pr-1">
+                                <div v-if="metadataLoading.list" class="rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-6 text-center text-sm text-slate-400">
+                                    Loading metadata…
+                                </div>
+                                <template v-else>
+                                    <button
+                                        v-for="movie in filteredMovies"
+                                        :key="movie.ratingKey"
+                                        @click="selectMovie(movie)"
+                                        class="w-full rounded-2xl border px-4 py-3 text-left transition"
+                                        :class="selectedMovie && String(selectedMovie.ratingKey) === String(movie.ratingKey)
+                                            ? 'border-indigo-500 bg-indigo-500/10 text-indigo-100'
+                                            : 'border-slate-800 bg-slate-900/60 text-slate-200 hover:border-slate-700 hover:bg-slate-900/80'"
+                                    >
+                                        <div class="flex items-start justify-between gap-3">
+                                            <div>
+                                                <p class="text-sm font-semibold text-white">
+                                                    {{ movie.title }}
+                                                    <span v-if="movie.year" class="ml-1 text-xs font-normal text-slate-400">({{ movie.year }})</span>
+                                                </p>
+                                                <p class="mt-1 text-xs text-slate-400">{{ formatVersionSummary(getPreferredVersion(movie)) }}</p>
+                                                <p v-if="movie.collections && movie.collections.length" class="mt-1 text-[11px] uppercase tracking-wide text-slate-500">
+                                                    {{ movie.collections.join(' · ') }}
+                                                </p>
+                                                <div v-if="versionSummaryTags(getPreferredVersion(movie)).length" class="mt-2 flex flex-wrap gap-2 text-[10px] font-medium uppercase tracking-wide">
+                                                    <span v-for="tag in versionSummaryTags(getPreferredVersion(movie))" :key="tag" class="rounded-full border px-2 py-0.5" :class="tagBadgeClass(tag)">
+                                                        {{ tag }}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            <div class="text-right text-[11px] text-slate-500 leading-relaxed">
+                                                <p v-if="movie.detailRefreshedAt">Live {{ formatRelative(movie.detailRefreshedAt) }}</p>
+                                                <p v-else-if="movie.summaryRefreshedAt">Cached {{ formatRelative(movie.summaryRefreshedAt) }}</p>
+                                                <p v-else>Cache pending</p>
+                                                <p class="mt-1 text-slate-400">{{ movie.versions?.length || 0 }} versions</p>
+                                            </div>
+                                        </div>
+                                    </button>
+                                    <p v-if="!filteredMovies.length" class="rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-6 text-center text-sm text-slate-500">
+                                        No movies match "{{ movieSearch }}".
+                                    </p>
+                                    <p v-if="metadataError.list && !metadata.movies.length" class="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-6 text-center text-xs text-rose-200">
+                                        {{ metadataError.list }}
+                                    </p>
+                                </template>
+                            </div>
+                        </div>
+                        <div class="xl:col-span-3">
+                            <div class="min-h-[28rem] rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+                                <template v-if="!selectedMovie">
+                                    <div class="flex h-full items-center justify-center text-sm text-slate-500">
+                                        Select a movie from the left to view its metadata.
+                                    </div>
+                                </template>
+                                <template v-else>
+                                    <div class="flex flex-wrap items-start justify-between gap-4">
+                                        <div class="space-y-2">
+                                            <div class="flex items-center gap-2">
+                                                <h4 class="text-2xl font-semibold text-white">{{ selectedMovie.title }}</h4>
+                                                <span v-if="selectedMovie.year" class="text-base font-medium text-slate-400">({{ selectedMovie.year }})</span>
+                                            </div>
+                                            <p v-if="selectedMovie.tagline" class="text-sm text-slate-400">{{ selectedMovie.tagline }}</p>
+                                            <p class="text-xs text-slate-500">
+                                                Last live pull:
+                                                <span v-if="selectedMovie.detailRefreshedAt">{{ formatRelative(selectedMovie.detailRefreshedAt) }}</span>
+                                                <span v-else>Not yet generated</span>
+                                            </p>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <button
+                                                @click="refreshSelectedMovie"
+                                                :disabled="!selectedMovie || metadataLoading.detail"
+                                                class="rounded-md border border-indigo-500/50 px-3 py-1.5 text-xs font-medium text-indigo-200 hover:bg-indigo-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                                            >
+                                                Pull live EXIF
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <p v-if="metadataLoading.detail" class="mt-4 rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-slate-300">
+                                        Running ffprobe… this can take a few seconds.
+                                    </p>
+                                    <p v-if="metadataError.detail" class="mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-xs text-rose-200">
+                                        {{ metadataError.detail }}
+                                    </p>
+                                    <div class="mt-6 space-y-4" v-if="selectedMovie.versions && selectedMovie.versions.length">
+                                        <div class="flex flex-wrap items-center gap-2">
+                                            <button
+                                                v-for="version in selectedMovie.versions"
+                                                :key="version.id"
+                                                class="rounded-md border px-3 py-1 text-xs font-medium transition"
+                                                :class="String(selectedVersionId) === String(version.id)
+                                                    ? 'border-indigo-400 bg-indigo-500/10 text-indigo-200'
+                                                    : 'border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-600 hover:bg-slate-900'"
+                                                @click="setSelectedVersion(version.id)"
+                                            >
+                                                {{ formatVersionLabel(version) }}
+                                            </button>
+                                        </div>
+                                        <div v-if="selectedVersion" class="space-y-4">
+                                            <div class="grid gap-4 md:grid-cols-5">
+                                                <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+                                                    <p class="text-xs uppercase tracking-wide text-slate-400">Resolution</p>
+                                                    <p class="mt-1 text-sm font-medium text-white">{{ formatResolution(selectedVersion) }}</p>
+                                                </div>
+                                                <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+                                                    <p class="text-xs uppercase tracking-wide text-slate-400">Dynamic Range</p>
+                                                    <p class="mt-1 text-sm font-medium text-white">
+                                                        <template v-if="getVersionFeatures(selectedVersion).hasDolbyVision">
+                                                            DoVi {{ getVersionFeatures(selectedVersion).dolbyVisionLabel || 'Present' }}
+                                                        </template>
+                                                        <template v-else>
+                                                            {{ getVersionFeatures(selectedVersion).dynamicRange || '—' }}
+                                                        </template>
+                                                    </p>
+                                                    <p class="text-xs text-slate-500" v-if="getVersionFeatures(selectedVersion).colorPrimaries">
+                                                        {{ getVersionFeatures(selectedVersion).colorPrimaries }} · {{ getVersionFeatures(selectedVersion).colorTrc || 'PQ' }}
+                                                    </p>
+                                                </div>
+                                                <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+                                                    <p class="text-xs uppercase tracking-wide text-slate-400">Video</p>
+                                                    <p class="mt-1 text-sm font-medium text-white">
+                                                        {{ selectedVersion.videoCodec ? selectedVersion.videoCodec.toUpperCase() : '—' }}
+                                                    </p>
+                                                    <p class="text-xs text-slate-500">
+                                                        {{ formatBitrate(selectedVersion.bitrate) }} · {{ formatDuration(selectedVersion.duration) }}
+                                                    </p>
+                                                </div>
+                                                <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+                                                    <p class="text-xs uppercase tracking-wide text-slate-400">Audio</p>
+                                                    <p class="mt-1 text-sm font-medium text-white">{{ formatAudioSummary(selectedVersion) }}</p>
+                                                    <p class="text-xs text-slate-500" v-if="getVersionFeatures(selectedVersion).hasAtmos">Dolby Atmos detected</p>
+                                                </div>
+                                                <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+                                                    <p class="text-xs uppercase tracking-wide text-slate-400">Container</p>
+                                                    <p class="mt-1 text-sm font-medium text-white">{{ selectedVersion.container ? selectedVersion.container.toUpperCase() : '—' }}</p>
+                                                </div>
+                                            </div>
+                                            <div class="space-y-4">
+                                                <div
+                                                    v-for="(part, partIndex) in selectedVersion.parts"
+                                                    :key="part.id || partIndex"
+                                                    class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5"
+                                                >
+                                                    <div class="flex flex-wrap items-center justify-between gap-3">
+                                                        <div>
+                                                            <p class="text-sm font-semibold text-white">File {{ partIndex + 1 }}</p>
+                                                            <p class="text-xs text-slate-500 break-all">{{ part.file || 'Path unavailable' }}</p>
+                                                        </div>
+                                                        <div class="text-right text-xs text-slate-400">
+                                                            <p>{{ formatFileSize(part.size) }}</p>
+                                                            <p>{{ formatDuration(part.duration) }}</p>
+                                                        </div>
+                                                    </div>
+                                                    <p v-if="part.ffprobeError" class="mt-3 rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                                                        ffprobe error: {{ part.ffprobeError }}
+                                                    </p>
+                                                    <div v-else-if="part.streamSummary" class="mt-4 grid gap-4 lg:grid-cols-3">
+                                                        <div>
+                                                            <p class="text-xs font-semibold uppercase tracking-wide text-slate-400">Video Streams</p>
+                                                            <ul class="mt-2 space-y-2 text-xs text-slate-300" v-if="part.streamSummary.video.length">
+                                                                <li v-for="stream in part.streamSummary.video" :key="stream.id" class="rounded-md bg-slate-900/70 px-3 py-2">
+                                                                    {{ describeVideoStream(stream) }}
+                                                                </li>
+                                                            </ul>
+                                                            <p v-else class="mt-2 text-xs text-slate-500">No video streams reported.</p>
+                                                        </div>
+                                                        <div>
+                                                            <p class="text-xs font-semibold uppercase tracking-wide text-slate-400">Audio Tracks</p>
+                                                            <ul class="mt-2 space-y-2 text-xs text-slate-300" v-if="part.streamSummary.audio.length">
+                                                                <li v-for="stream in part.streamSummary.audio" :key="stream.id" class="rounded-md bg-slate-900/70 px-3 py-2">
+                                                                    {{ describeAudioStream(stream) }}
+                                                                </li>
+                                                            </ul>
+                                                            <p v-else class="mt-2 text-xs text-slate-500">No audio tracks detected.</p>
+                                                        </div>
+                                                        <div>
+                                                            <p class="text-xs font-semibold uppercase tracking-wide text-slate-400">Subtitles</p>
+                                                            <ul class="mt-2 space-y-2 text-xs text-slate-300" v-if="part.streamSummary.subtitles.length">
+                                                                <li v-for="stream in part.streamSummary.subtitles" :key="stream.id" class="rounded-md bg-slate-900/70 px-3 py-2">
+                                                                    {{ describeSubtitleStream(stream) }}
+                                                                </li>
+                                                            </ul>
+                                                            <p v-else class="mt-2 text-xs text-slate-500">No subtitle tracks detected.</p>
+                                                        </div>
+                                                    </div>
+                                                    <p v-else class="mt-3 text-xs text-slate-500">Stream analysis pending. Pull live EXIF to generate ffprobe data.</p>
+                                                    <div v-if="part.plexStreams && part.plexStreams.length" class="mt-4 space-y-2 text-xs text-slate-300">
+                                                        <p class="text-xs font-semibold uppercase tracking-wide text-slate-400">Plex Metadata</p>
+                                                        <div v-for="stream in part.plexStreams" :key="stream.id + '-' + stream.type" class="rounded-md border border-slate-800 bg-slate-900/50 px-3 py-2">
+                                                            <p class="font-semibold text-slate-100" v-if="stream.type === 'video'">Video Track</p>
+                                                            <p class="font-semibold text-slate-100" v-else-if="stream.type === 'audio'">Audio Track</p>
+                                                            <p class="font-semibold text-slate-100" v-else-if="stream.type === 'subtitle'">Subtitle</p>
+                                                            <p>{{ stream.extendedDisplayTitle || stream.displayTitle || (stream.codec ? stream.codec.toUpperCase() : 'Track') }}</p>
+                                                            <p v-if="stream.type === 'video' && stream.dolbyVision && stream.dolbyVision.present" class="text-indigo-200">
+                                                                Dolby Vision Profile {{ stream.dolbyVision.profile }} · Level {{ stream.dolbyVision.level }}
+                                                            </p>
+                                                            <p v-else-if="stream.type === 'video' && stream.dynamicRange" class="text-slate-400">
+                                                                {{ stream.dynamicRange }}
+                                                            </p>
+                                                            <p v-if="stream.type === 'video' && stream.colorPrimaries" class="text-slate-500">
+                                                                {{ stream.colorPrimaries }} · {{ stream.colorTrc || 'PQ' }} · {{ stream.bitDepth ? stream.bitDepth + '-bit' : '' }}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <p v-else class="text-sm text-slate-500">No version metadata available for this title.</p>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                    <p v-if="metadataError.list" class="mt-4 rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                        {{ metadataError.list }}
+                    </p>
+                </section>
+
                 <section class="grid gap-6 lg:grid-cols-3">
                     <div class="col-span-2 space-y-6">
                         <div class="rounded-3xl border border-slate-800 bg-slateglass p-6 backdrop-blur-xl">
                             <h3 class="text-xl font-semibold text-white">Recent Dolby Vision Additions</h3>
                             <p class="text-sm text-slate-400">Latest titles enriched with Dolby Vision metadata.</p>
                             <div class="mt-4 space-y-3">
-                                <div v-for="item in metrics.recent" :key="item.title + item.updated_at" class="flex justify-between rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-3">
+                                <button
+                                    v-for="item in metrics.recent"
+                                    :key="item.title + item.updated_at"
+                                    type="button"
+                                    @click="openRecentMovie(item)"
+                                    class="flex w-full justify-between rounded-2xl border px-4 py-3 text-left transition"
+                                    :class="selectedMovie && item.rating_key && String(selectedMovie.ratingKey) === String(item.rating_key)
+                                        ? 'border-indigo-500 bg-indigo-500/10'
+                                        : 'border-slate-800 bg-slate-900/60 hover:border-slate-700 hover:bg-slate-900/80'"
+                                >
                                     <div>
                                         <p class="font-medium text-white">{{ item.title }}</p>
                                         <p class="text-xs text-slate-400">Profile {{ item.dv_profile || '—' }} · {{ item.has_atmos ? 'Atmos' : 'No Atmos' }} · {{ item.dv_fel ? 'FEL' : 'MEL' }}</p>
+                                        <div v-if="versionSummaryTags(getPreferredVersion(movieByRatingKey(item.rating_key))).length" class="mt-2 flex flex-wrap gap-2 text-[10px] font-medium uppercase tracking-wide">
+                                            <span
+                                                v-for="tag in versionSummaryTags(getPreferredVersion(movieByRatingKey(item.rating_key)))"
+                                                :key="tag"
+                                                class="rounded-full border px-2 py-0.5"
+                                                :class="tagBadgeClass(tag)"
+                                            >
+                                                {{ tag }}
+                                            </span>
+                                        </div>
                                     </div>
                                     <div class="text-right text-xs text-slate-500">
                                         <p>{{ formatRelative(item.updated_at) }}</p>
                                         <p v-if="item.file_size" class="text-slate-400">{{ item.file_size.toFixed(2) }} GB</p>
                                     </div>
-                                </div>
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -109,8 +384,8 @@
                                 <li class="flex justify-between"><span>Atmos coverage</span><span class="font-semibold text-sky-300">{{ metrics.ratios.atmos_percent }}%</span></li>
                                 <li class="flex justify-between"><span>DV + Atmos overlap</span><span class="font-semibold text-sky-300">{{ metrics.ratios.dv_and_atmos }}</span></li>
                                 <li class="flex justify-between"><span>FEL + Atmos overlap</span><span class="font-semibold text-sky-300">{{ metrics.ratios.fel_and_atmos }}</span></li>
-                                <li class="flex justify-between"><span>Average DV bitrate</span><span class="font-semibold text-emerald-300">{{ metrics.quality.avg_bitrate_mbps.toFixed(2) }} Mbps</span></li>
-                                <li class="flex justify-between"><span>Average DV file size</span><span class="font-semibold text-emerald-300">{{ metrics.quality.avg_file_size_gb.toFixed(2) }} GB</span></li>
+                                <li class="flex justify-between"><span>Median DV bitrate</span><span class="font-semibold text-emerald-300">{{ metrics.quality.median_bitrate_mbps.toFixed(2) }} Mbps</span></li>
+                                <li class="flex justify-between"><span>Median DV file size</span><span class="font-semibold text-emerald-300">{{ metrics.quality.median_file_size_gb.toFixed(2) }} GB</span></li>
                             </ul>
                         </div>
 

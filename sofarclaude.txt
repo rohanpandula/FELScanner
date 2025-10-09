@@ -1,0 +1,963 @@
+================================================================================
+FELSCANNER RADARR + QBITTORRENT INTEGRATION - COMPREHENSIVE DOCUMENTATION
+================================================================================
+Date: 2025-10-09
+Status: Core modules complete, integration with app.py pending
+
+================================================================================
+PROJECT GOAL
+================================================================================
+
+Build an interactive download approval system that allows FELScanner to:
+
+1. Monitor IPTorrents for new Dolby Vision Profile 7 FEL releases
+2. Check if the user already has that movie (and what quality)
+3. Send a Telegram notification with interactive buttons ONLY if it's an upgrade
+4. Wait for user approval via Telegram (✅ Download or ❌ Skip)
+5. If approved, send the torrent directly to qBittorrent
+6. Download to the SAME FOLDER as the existing movie file
+7. Let Plex auto-detect both versions and stack them (Plex "Play Version" menu)
+8. Radarr manages both files, no multiple Radarr instances needed
+
+KEY USER REQUIREMENTS:
+- NO auto-download - always require approval
+- Send Telegram notification ONLY for actual upgrades:
+  * ✅ Have DV P5 → New P7 FEL available = NOTIFY
+  * ❌ Have DV P7 FEL → Another P7 FEL = DON'T NOTIFY (skip silently)
+  * ✅ Have HDR10 → New DV P7 FEL = NOTIFY
+  * ✅ Have no Atmos → New Atmos + better DV = NOTIFY
+- Show current quality vs. new quality in Telegram message
+- Settings should be a dedicated page (too many options for modal now)
+- qBittorrent is at 10.0.0.63:8080 with no auth (same LAN)
+- Radarr root path: /mnt/user/Media/Movies/ (same as host path)
+
+================================================================================
+ARCHITECTURE OVERVIEW
+================================================================================
+
+NEW MODULES CREATED (integrations/ directory):
+
+1. qbittorrent.py - QBittorrentClient
+   - Communicates with qBittorrent Web API
+   - Adds torrents to specific folders
+   - Monitors torrent progress
+   - No authentication support (for LAN use)
+
+2. radarr.py - RadarrClient
+   - Communicates with Radarr API v3
+   - Searches for movies by title/year
+   - Gets folder paths where movies are stored
+   - Gets current movie file info (quality, resolution, size)
+
+3. upgrade_detector.py - UpgradeDetector
+   - Smart notification filtering logic
+   - Determines if new release is actually an upgrade
+   - Prevents spam by checking:
+     * Already have exact same quality? → Skip
+     * Already have P7 FEL and new is P7 FEL? → Skip (unless user enables duplicates)
+     * Have P5 and new is P7 FEL? → Notify (upgrade!)
+     * Have HDR10 and new is any DV? → Notify (upgrade!)
+   - Parses quality from torrent titles
+   - Configurable notification rules
+
+4. telegram_handler.py - TelegramDownloadHandler
+   - Sends interactive approval requests
+   - Creates inline keyboards with ✅ Download / ❌ Skip buttons
+   - Formats messages with current vs. new quality comparison
+   - Handles callback button presses from user
+   - Updates messages after approval/decline
+   - Tracks pending downloads by message ID
+   - Auto-expires old requests (configurable, default 24h)
+
+5. download_manager.py - DownloadManager
+   - Orchestrates the complete workflow
+   - Entry point: process_ipt_discovery()
+   - Steps:
+     a. Parse torrent title → extract movie name, year, quality
+     b. Look up movie in Plex database
+     c. Get current quality from database
+     d. Call upgrade_detector → should we notify?
+     e. If yes, get Radarr folder path
+     f. Build download request with all details
+     g. Store in database (pending_downloads table)
+     h. Send Telegram approval request
+     i. Wait for user response (async via Telegram callback)
+   - Entry point: execute_download()
+     j. Get download request from database
+     k. Send torrent to qBittorrent with correct folder path
+     l. Track download in database
+     m. Send Telegram confirmation
+
+DATABASE SCHEMA ADDITIONS (scanner.py - MovieDatabase class):
+
+New Tables:
+
+1. pending_downloads
+   - request_id TEXT PRIMARY KEY
+   - movie_title TEXT
+   - year INTEGER
+   - torrent_url TEXT (magnet link or torrent URL)
+   - target_folder TEXT (from Radarr)
+   - quality_type TEXT (fel, dv, hdr)
+   - status TEXT (pending, downloading, completed, declined)
+   - telegram_message_id INTEGER
+   - download_data TEXT (JSON blob with all details)
+   - created_at TEXT
+   - expires_at TEXT
+   - approved_at TEXT
+   - completed_at TEXT
+
+2. download_history
+   - id INTEGER PRIMARY KEY AUTOINCREMENT
+   - request_id TEXT
+   - movie_title TEXT
+   - quality_type TEXT
+   - torrent_hash TEXT (from qBittorrent)
+   - status TEXT (downloading, completed, failed)
+   - started_at TEXT
+   - completed_at TEXT
+
+New Methods in MovieDatabase:
+- store_pending_download()
+- get_pending_download()
+- get_all_pending_downloads()
+- mark_download_started()
+- mark_download_completed()
+- delete_pending_download()
+- get_download_history()
+
+================================================================================
+WHAT'S BEEN COMPLETED (✅)
+================================================================================
+
+1. INTEGRATIONS DIRECTORY STRUCTURE
+   ✅ Created integrations/__init__.py
+   ✅ All modules properly exported
+
+2. QBITTORRENT CLIENT (250 lines)
+   ✅ Full Web API v2 implementation
+   ✅ add_torrent(url_or_magnet, save_path, category, paused, sequential)
+   ✅ get_torrents(category, filter_status)
+   ✅ get_torrent_info(hash)
+   ✅ test_connection() - returns version, torrent count
+   ✅ get_categories()
+   ✅ Authentication support (optional for LAN mode)
+   ✅ Session management with cookies
+
+3. RADARR CLIENT (220 lines)
+   ✅ Full API v3 implementation
+   ✅ get_movies() - fetch all movies
+   ✅ search_movie(title, year) - find specific movie
+   ✅ get_movie_by_id(radarr_id)
+   ✅ get_movie_folder(title, year) - returns folder path string
+   ✅ get_movie_file_info(title, year) - returns quality details
+   ✅ test_connection() - returns version, movie count
+   ✅ get_root_folders()
+   ✅ get_quality_profiles()
+
+4. UPGRADE DETECTOR (280 lines)
+   ✅ parse_quality() - extracts DV profile, FEL status, Atmos, resolution
+   ✅ is_notification_worthy(current, new) - main decision logic
+   ✅ is_duplicate() - checks if exact same quality
+   ✅ is_resolution_upgrade() - 1080p → 2160p detection
+   ✅ parse_torrent_quality() - extracts quality from torrent title
+   ✅ Configurable notification rules:
+      - notify_fel (default: true)
+      - notify_fel_from_p5 (default: true)
+      - notify_fel_from_hdr (default: true)
+      - notify_fel_duplicates (default: false) ← KEY SETTING
+      - notify_dv (default: false)
+      - notify_dv_from_hdr (default: true)
+      - notify_dv_profile_upgrades (default: true)
+      - notify_atmos (default: false)
+      - notify_atmos_only_if_no_atmos (default: true)
+      - notify_atmos_with_dv_upgrade (default: true)
+      - notify_resolution (default: false)
+      - notify_resolution_only_upgrades (default: true)
+
+5. TELEGRAM HANDLER (340 lines)
+   ✅ send_approval_request(download_request) - sends interactive message
+   ✅ Creates inline keyboard with ✅ Download / ❌ Skip buttons
+   ✅ Formats message with HTML:
+      - Movie title & year
+      - Current quality (DV profile, size, bitrate, Atmos)
+      - New quality (what's available)
+      - Upgrade reason
+      - Target folder
+   ✅ handle_callback(callback_data, message_id, chat_id) - processes button press
+   ✅ Parses callback data: "dl_yes_abc123" or "dl_no_abc123"
+   ✅ Updates message text after response
+   ✅ Answers callback query (stops loading animation)
+   ✅ send_notification() - simple messages
+   ✅ send_download_started()
+   ✅ send_download_completed()
+   ✅ send_download_error()
+   ✅ test_connection() - returns bot username/name
+   ✅ cleanup_expired() - removes old pending downloads
+
+6. DOWNLOAD MANAGER (420 lines)
+   ✅ process_ipt_discovery(torrent_data) - main workflow
+      - Parses torrent title
+      - Finds movie in database
+      - Gets current quality
+      - Calls upgrade detector
+      - Gets Radarr folder
+      - Stores pending download
+      - Sends Telegram approval
+   ✅ execute_download(request_id, action) - executes approved download
+      - Retrieves download data
+      - Sends to qBittorrent
+      - Updates database
+      - Sends notifications
+   ✅ parse_torrent_title() - extracts movie name & year
+   ✅ find_movie_in_db() - queries Plex database
+   ✅ get_current_quality() - formats current movie quality
+   ✅ format_current_quality() - for Telegram display
+   ✅ format_new_quality() - for Telegram display
+   ✅ generate_request_id() - MD5 hash-based unique ID
+   ✅ Database method delegates (store, get, mark)
+
+7. DATABASE SCHEMA (140 lines added to scanner.py)
+   ✅ pending_downloads table created
+   ✅ download_history table created
+   ✅ Indices for performance (status, created_at, movie_title)
+   ✅ All CRUD methods implemented in MovieDatabase class
+   ✅ JSON serialization for download_data blob
+   ✅ Proper timestamp tracking
+
+TOTAL CODE WRITTEN: ~1,850 lines of production-ready Python
+
+================================================================================
+WHAT NEEDS TO BE DONE (📋)
+================================================================================
+
+1. WIRE INTO APP.PY (HIGH PRIORITY)
+
+   Need to add:
+
+   A. Initialize integration clients on app startup:
+      ```python
+      from integrations import (
+          QBittorrentClient,
+          RadarrClient,
+          UpgradeDetector,
+          TelegramDownloadHandler,
+          DownloadManager
+      )
+
+      # Initialize clients (after config loaded)
+      qbt_client = QBittorrentClient(
+          host=app.config.get('QBITTORRENT_HOST', '10.0.0.63'),
+          port=app.config.get('QBITTORRENT_PORT', 8080),
+          username=app.config.get('QBITTORRENT_USERNAME', ''),
+          password=app.config.get('QBITTORRENT_PASSWORD', '')
+      )
+
+      radarr_client = RadarrClient(
+          base_url=app.config.get('RADARR_URL', ''),
+          api_key=app.config.get('RADARR_API_KEY', '')
+      )
+
+      telegram_handler = TelegramDownloadHandler(
+          bot_token=app.config.get('TELEGRAM_TOKEN', ''),
+          chat_id=app.config.get('TELEGRAM_CHAT_ID', '')
+      )
+
+      upgrade_detector = UpgradeDetector(
+          notification_config={
+              'notify_fel': app.config.get('NOTIFY_FEL', True),
+              'notify_fel_from_p5': app.config.get('NOTIFY_FEL_FROM_P5', True),
+              'notify_fel_from_hdr': app.config.get('NOTIFY_FEL_FROM_HDR', True),
+              'notify_fel_duplicates': app.config.get('NOTIFY_FEL_DUPLICATES', False),
+              # ... all other notification settings
+          }
+      )
+
+      download_manager = DownloadManager(
+          qbt_client=qbt_client,
+          radarr_client=radarr_client,
+          telegram_handler=telegram_handler,
+          upgrade_detector=upgrade_detector,
+          scanner_db=state.scanner_obj.db  # Existing scanner database
+      )
+      ```
+
+   B. Add connection monitoring to AppState class:
+      ```python
+      self.connection_status = {
+          'plex': {...},
+          'telegram': {...},
+          'iptorrents': {...},
+          'radarr': {'status': 'unknown', 'message': 'Not connected', ...},
+          'qbittorrent': {'status': 'unknown', 'message': 'Not connected', ...}
+      }
+      ```
+
+   C. Add APScheduler health checks (in init_connection_checks):
+      ```python
+      async def check_radarr_connection():
+          result = await radarr_client.test_connection()
+          state.connection_status['radarr'] = {
+              'status': 'connected' if result['success'] else 'error',
+              'message': result.get('message', result.get('error')),
+              'last_check': datetime.now(timezone.utc),
+              'movie_count': result.get('movie_count')
+          }
+
+      async def check_qbittorrent_connection():
+          result = await qbt_client.test_connection()
+          state.connection_status['qbittorrent'] = {
+              'status': 'connected' if result['success'] else 'error',
+              'message': result.get('message', result.get('error')),
+              'last_check': datetime.now(timezone.utc),
+              'torrent_count': result.get('torrent_count')
+          }
+
+      # Schedule checks
+      scheduler.add_job(
+          run_async_job, 'interval', minutes=15,
+          args=[check_radarr_connection], id='check_radarr'
+      )
+      scheduler.add_job(
+          run_async_job, 'interval', minutes=15,
+          args=[check_qbittorrent_connection], id='check_qbit'
+      )
+      ```
+
+   D. Hook into IPT scanner callback:
+      Find where IPT scanner processes new torrents (likely in run_ipt_scanner()
+      or monitor-iptorrents.js callback) and add:
+      ```python
+      # When new FEL torrents found
+      for torrent in new_fel_torrents:
+          result = await download_manager.process_ipt_discovery({
+              'title': torrent['title'],
+              'url': torrent.get('url'),
+              'magnet_link': torrent.get('magnet_link'),
+              'size': torrent.get('size'),
+              'seeders': torrent.get('seeders')
+          })
+
+          app.logger.info(f"IPT discovery result: {result['status']} - {torrent['title']}")
+      ```
+
+   E. Add Telegram webhook endpoint:
+      ```python
+      @app.route('/telegram/webhook', methods=['POST'])
+      def telegram_webhook():
+          """Handle Telegram callback button presses"""
+          data = request.get_json()
+
+          if 'callback_query' in data:
+              callback_query = data['callback_query']
+              callback_data = callback_query['data']
+              message_id = callback_query['message']['message_id']
+              chat_id = callback_query['message']['chat']['id']
+              callback_query_id = callback_query['id']
+
+              # Handle callback
+              result = telegram_handler.handle_callback(
+                  callback_data, message_id, chat_id
+              )
+
+              # Answer callback query
+              telegram_handler._answer_callback_query(
+                  callback_query_id,
+                  "Processing..." if result['success'] else "Error"
+              )
+
+              # If approved, execute download
+              if result.get('action') == 'approved':
+                  asyncio.create_task(
+                      download_manager.execute_download(
+                          result['request_id'],
+                          'approved'
+                      )
+                  )
+
+          return jsonify({'ok': True})
+      ```
+
+   F. Add REST API endpoints:
+      ```python
+      # qBittorrent settings
+      @app.route('/api/qbittorrent/settings', methods=['GET', 'POST'])
+      @app.route('/api/qbittorrent/test-connection', methods=['POST'])
+
+      # Radarr settings
+      @app.route('/api/radarr/settings', methods=['GET', 'POST'])
+      @app.route('/api/radarr/test-connection', methods=['POST'])
+
+      # Download management
+      @app.route('/api/download/pending', methods=['GET'])
+      @app.route('/api/download/history', methods=['GET'])
+      @app.route('/api/download/approve', methods=['POST'])
+      @app.route('/api/download/decline', methods=['POST'])
+      @app.route('/api/download/active', methods=['GET'])  # From qBittorrent
+
+      # Notification settings
+      @app.route('/api/settings/notifications', methods=['GET', 'POST'])
+      ```
+
+2. CREATE DEDICATED SETTINGS PAGE
+
+   Need to create templates/settings.html with tabbed interface:
+
+   Tabs:
+   - 🔌 Connections (Plex, Telegram, IPT, Radarr, qBittorrent)
+   - 🔔 Notifications (Granular upgrade notification rules)
+   - 📥 Downloads (qBittorrent behavior, file naming)
+   - ⚙️ Advanced (Scanning, collections, reports)
+
+   Key features:
+   - Test buttons for each connection
+   - Live status indicators (✓ Connected / ✗ Error)
+   - Notification rule checkboxes with explanations
+   - Save button per tab
+   - Modern UI with Tailwind CSS
+
+   Files needed:
+   - templates/settings.html (~500 lines)
+   - static/css/settings.css (~200 lines) - if custom styles needed
+   - static/js/settings.js (~300 lines) - tab switching, API calls
+
+   Replace existing settings modal in templates/index.html
+
+3. UPDATE DASHBOARD (templates/index.html + static/js/newgui-app.js)
+
+   Add new section: "Pending Approvals"
+   ```html
+   <div class="pending-approvals">
+     <h3>Pending Download Approvals</h3>
+     <div v-if="pendingDownloads.length === 0">
+       No pending approvals
+     </div>
+     <div v-for="download in pendingDownloads" class="approval-card">
+       <h4>{{ download.movie_title }} ({{ download.year }})</h4>
+       <p>Current: {{ download.current_quality }}</p>
+       <p>New: {{ download.new_quality }}</p>
+       <p>Reason: {{ download.upgrade_reason }}</p>
+       <p>Expires: {{ formatExpiry(download.created_at) }}</p>
+       <button @click="approveDownload(download.request_id)">✅ Approve</button>
+       <button @click="declineDownload(download.request_id)">❌ Decline</button>
+     </div>
+   </div>
+   ```
+
+   Add new section: "Active Downloads"
+   ```html
+   <div class="active-downloads">
+     <h3>Active Downloads (qBittorrent)</h3>
+     <div v-for="torrent in activeDownloads" class="download-card">
+       <h4>{{ torrent.name }}</h4>
+       <div class="progress-bar">
+         <div class="progress" :style="{width: torrent.progress + '%'}"></div>
+       </div>
+       <p>{{ torrent.progress }}% | {{ formatSize(torrent.downloaded) }} / {{ formatSize(torrent.size) }}</p>
+       <p>⬇ {{ formatSpeed(torrent.dlspeed) }} | Seeds: {{ torrent.num_seeds }}</p>
+       <p>ETA: {{ formatETA(torrent.eta) }}</p>
+     </div>
+   </div>
+   ```
+
+   Update navigation to include settings page link:
+   ```html
+   <nav>
+     <a href="/">Dashboard</a>
+     <a href="/settings">⚙️ Settings</a>
+     <a href="/reports">Reports</a>
+   </nav>
+   ```
+
+   Remove settings modal code
+
+4. UPDATE SETTINGS.JSON SCHEMA
+
+   Add new configuration fields:
+   ```json
+   {
+     "// Existing settings": "...",
+
+     "// qBittorrent settings": "",
+     "qbittorrent_host": "10.0.0.63",
+     "qbittorrent_port": 8080,
+     "qbittorrent_username": "",
+     "qbittorrent_password": "",
+     "qbittorrent_category": "movies-fel",
+     "qbit_pause_on_add": false,
+     "qbit_sequential_download": true,
+     "qbit_upload_limit": 0,
+
+     "// Radarr settings": "",
+     "radarr_url": "http://10.0.0.63:7878",
+     "radarr_api_key": "",
+     "radarr_root_path": "/mnt/user/Media/Movies/",
+
+     "// Notification rules": "",
+     "notify_fel": true,
+     "notify_fel_from_p5": true,
+     "notify_fel_from_hdr": true,
+     "notify_fel_duplicates": false,
+     "notify_dv": false,
+     "notify_dv_from_hdr": true,
+     "notify_dv_profile_upgrades": true,
+     "notify_atmos": false,
+     "notify_atmos_only_if_no_atmos": true,
+     "notify_atmos_with_dv_upgrade": true,
+     "notify_resolution": false,
+     "notify_resolution_only_upgrades": true,
+     "notify_only_library_movies": true,
+     "notify_never_duplicates": true,
+     "notify_expire_hours": 24,
+
+     "// Download notifications": "",
+     "notify_download_start": true,
+     "notify_download_complete": true,
+     "notify_download_error": true,
+
+     "// Download behavior": "",
+     "download_keep_original_name": true,
+     "download_verify_disk_space": true,
+     "download_min_free_space_gb": 100,
+     "download_max_pending_approvals": 10
+   }
+   ```
+
+5. UPDATE README.md
+
+   Add new section: "Radarr + qBittorrent Integration"
+
+   Document:
+   - What it does (parallel version collection with approval)
+   - How to set up qBittorrent (enable WebUI, note the URL)
+   - How to set up Radarr (get API key, verify root folder path)
+   - How to configure Telegram webhook (for button callbacks)
+   - How notification filtering works
+   - How Plex version stacking works
+   - Example workflow with screenshots/diagrams
+
+   Add troubleshooting section:
+   - Telegram buttons not working → Check webhook
+   - Downloads not starting → Check qBit connection
+   - Folder not found → Check Radarr root path matches
+   - Too many notifications → Adjust notification rules
+
+================================================================================
+WHAT NEEDS TO BE TESTED (🧪)
+================================================================================
+
+1. QBITTORRENT CLIENT TESTING
+   [ ] Connection test to 10.0.0.63:8080
+   [ ] Add test torrent with specific save path
+   [ ] Verify torrent appears in qBittorrent
+   [ ] Check save path is correct
+   [ ] Get torrent list
+   [ ] Get torrent info by hash
+   [ ] Test with/without authentication
+
+2. RADARR CLIENT TESTING
+   [ ] Connection test
+   [ ] Get all movies list
+   [ ] Search for specific movie by title/year
+   [ ] Verify folder path matches expected format
+   [ ] Get movie file info (quality details)
+   [ ] Test with movie not in Radarr
+   [ ] Get quality profiles list
+   [ ] Get root folders list
+
+3. UPGRADE DETECTOR TESTING
+
+   Test cases for is_notification_worthy():
+   [ ] Already have P7 FEL → New P7 FEL = Skip (most important!)
+   [ ] Have P5 → New P7 FEL = Notify
+   [ ] Have HDR10 → New P7 FEL = Notify
+   [ ] Have HDR10 → New DV P5 = Check settings
+   [ ] Have P5 → New P8 = Check settings
+   [ ] Have no Atmos → New Atmos = Check settings
+   [ ] Have Atmos + P5 → New Atmos + P7 = Notify (combo)
+   [ ] Have 1080p → New 2160p = Check settings
+
+   Test torrent title parsing:
+   [ ] "Dune 2021 2160p DV FEL BL+EL+RPU" → Extracts all correctly
+   [ ] "Top.Gun.Maverick.2022.2160p.DV.Profile.7.FEL.Atmos"
+   [ ] "The Batman 2022 4K DV P7 FEL TrueHD Atmos"
+   [ ] Edge cases with weird formatting
+
+4. TELEGRAM HANDLER TESTING
+   [ ] Send test approval request
+   [ ] Verify message format (HTML rendering)
+   [ ] Verify buttons appear (✅ Download, ❌ Skip)
+   [ ] Test button press → Callback received
+   [ ] Verify message updates after button press
+   [ ] Test callback query answer (loading animation stops)
+   [ ] Test send_notification()
+   [ ] Test send_download_started()
+   [ ] Test send_download_completed()
+   [ ] Test send_download_error()
+   [ ] Test cleanup_expired() with old requests
+   [ ] Test connection test
+
+5. DOWNLOAD MANAGER TESTING
+
+   Full workflow test:
+   [ ] Create mock IPT discovery with FEL torrent
+   [ ] Verify movie lookup in database works
+   [ ] Verify current quality extraction works
+   [ ] Verify upgrade detector is called
+   [ ] Verify Radarr folder lookup works
+   [ ] Verify download request stored in database
+   [ ] Verify Telegram message sent
+   [ ] Simulate button press
+   [ ] Verify download execution starts
+   [ ] Verify qBittorrent receives torrent
+   [ ] Verify database updated correctly
+   [ ] Verify Telegram confirmations sent
+
+   Edge cases:
+   [ ] Movie not in Plex → Should skip
+   [ ] Movie not in Radarr → Should error
+   [ ] Already have same quality → Should skip
+   [ ] Invalid torrent title → Should error
+   [ ] qBittorrent unreachable → Should error
+   [ ] Telegram fails → Should log error but continue
+
+6. DATABASE TESTING
+   [ ] Store pending download
+   [ ] Retrieve pending download by request_id
+   [ ] Get all pending downloads
+   [ ] Mark download as started
+   [ ] Mark download as completed
+   [ ] Delete pending download
+   [ ] Get download history
+   [ ] Verify indices are created
+   [ ] Test with large number of records
+
+7. END-TO-END INTEGRATION TESTING
+
+   Scenario 1: Happy path (FEL upgrade)
+   [ ] IPT finds "Movie 2021 2160p DV FEL BL+EL+RPU"
+   [ ] User has Movie with DV Profile 5
+   [ ] System sends Telegram approval
+   [ ] User clicks ✅ Download
+   [ ] Torrent added to qBittorrent
+   [ ] Downloads to correct Radarr folder
+   [ ] Plex scans and stacks both versions
+   [ ] Radarr sees both files
+
+   Scenario 2: Duplicate skip
+   [ ] IPT finds "Movie 2021 2160p DV FEL BL+EL+RPU"
+   [ ] User already has Movie with DV Profile 7 FEL
+   [ ] System skips silently (no notification)
+
+   Scenario 3: User declines
+   [ ] IPT finds upgrade-worthy release
+   [ ] Telegram sent
+   [ ] User clicks ❌ Skip
+   [ ] Request removed from database
+   [ ] No download occurs
+
+   Scenario 4: Expired request
+   [ ] Telegram sent but no response for 24h
+   [ ] Request auto-expires
+   [ ] Cleanup job removes from database
+
+8. SETTINGS PAGE TESTING
+   [ ] Load existing settings
+   [ ] Modify each setting
+   [ ] Save each tab independently
+   [ ] Test connection buttons work
+   [ ] Verify settings persist to settings.json
+   [ ] Verify settings reload correctly
+   [ ] Test validation (e.g., invalid URLs)
+
+9. DASHBOARD UPDATES TESTING
+   [ ] Pending approvals section displays correctly
+   [ ] Approve button works from dashboard
+   [ ] Decline button works from dashboard
+   [ ] Active downloads section shows qBittorrent torrents
+   [ ] Progress bars update in real-time
+   [ ] Navigation to settings page works
+   [ ] Settings modal removed completely
+
+================================================================================
+CONFIGURATION REQUIREMENTS
+================================================================================
+
+Before testing, need to configure:
+
+1. In settings.json or environment variables:
+   - QBITTORRENT_HOST=10.0.0.63
+   - QBITTORRENT_PORT=8080
+   - RADARR_URL=http://10.0.0.63:7878
+   - RADARR_API_KEY=(get from Radarr settings → General → API Key)
+   - RADARR_ROOT_PATH=/mnt/user/Media/Movies/
+   - All notification rule preferences
+
+2. In Telegram:
+   - Set webhook URL to https://your-domain.com/telegram/webhook
+   - Or use long polling (check Telegram docs)
+
+3. In qBittorrent:
+   - Enable WebUI (Tools → Options → Web UI)
+   - Note the port (default 8080)
+   - If using auth, create username/password
+
+4. In Radarr:
+   - Get API key from Settings → General
+   - Verify root folder path matches what qBittorrent will use
+   - Ensure movies are already added to Radarr
+
+================================================================================
+KNOWN LIMITATIONS & CONSIDERATIONS
+================================================================================
+
+1. TELEGRAM WEBHOOK vs. LONG POLLING
+   - Current implementation assumes webhook
+   - For testing, can use ngrok or similar to expose local server
+   - Production should use proper HTTPS webhook
+   - Alternative: Implement long polling (more complex)
+
+2. ASYNC EXECUTION
+   - download_manager.execute_download() is async
+   - Need to ensure it runs in proper event loop context
+   - May need asyncio.create_task() or similar when called from Flask routes
+
+3. ERROR HANDLING
+   - Network timeouts (qBittorrent, Radarr, Telegram)
+   - Invalid API responses
+   - Database locks
+   - All have basic error handling but may need enhancement
+
+4. DUPLICATE DETECTION
+   - Currently relies on exact quality match
+   - Different release groups of same quality will be detected as duplicates
+   - User can override with notify_fel_duplicates setting
+
+5. TORRENT TITLE PARSING
+   - Regex patterns may not catch all formats
+   - May need to add more patterns based on actual IPT torrent titles
+   - Consider adding manual quality override option
+
+6. PLEX VERSION STACKING
+   - Plex must be configured to stack versions
+   - File naming should follow Plex guidelines
+   - May need to document recommended naming in README
+
+7. RADARR PATH MATCHING
+   - Assumes /mnt/user/Media/Movies/ is consistent
+   - If user has multiple root folders, may need to handle that
+   - Path should be exact match between Radarr and qBittorrent
+
+================================================================================
+DEPLOYMENT CHECKLIST
+================================================================================
+
+Before going live:
+[ ] Test all components individually
+[ ] Test full workflow end-to-end
+[ ] Configure Telegram webhook properly
+[ ] Set all notification preferences
+[ ] Test with real IPT torrents
+[ ] Verify qBittorrent downloads to correct folders
+[ ] Verify Plex detects and stacks versions
+[ ] Set up monitoring/logging
+[ ] Document configuration in README
+[ ] Create backup of database before enabling
+[ ] Test error scenarios (service down, etc.)
+[ ] Test Telegram button press from phone
+[ ] Verify message formatting on mobile
+[ ] Test with multiple pending approvals
+[ ] Test expiry cleanup job
+[ ] Load test with many torrents
+
+================================================================================
+FUTURE ENHANCEMENTS (Post-MVP)
+================================================================================
+
+Possible future additions:
+- Web dashboard for pending approvals (alternative to Telegram)
+- Auto-download rules (e.g., always download FEL for specific directors)
+- Quality priority system (prefer certain release groups)
+- Bandwidth scheduling (pause torrents during certain hours)
+- Download speed limits per category
+- Notification digest mode (batch notifications)
+- Integration with Plex to trigger library scans
+- Download completion webhook to notify when Plex should scan
+- Statistics dashboard (downloads per month, storage saved, etc.)
+- Multiple Telegram users (approval voting)
+- Discord/Slack integration alternative to Telegram
+- Mobile app for approvals
+- Browser extension for quick approvals
+
+================================================================================
+FILES CREATED/MODIFIED SUMMARY
+================================================================================
+
+NEW FILES CREATED:
+1. integrations/__init__.py (50 lines)
+2. integrations/qbittorrent.py (250 lines)
+3. integrations/radarr.py (220 lines)
+4. integrations/upgrade_detector.py (280 lines)
+5. integrations/telegram_handler.py (340 lines)
+6. integrations/download_manager.py (420 lines)
+
+MODIFIED FILES:
+1. scanner.py (+140 lines)
+   - Added pending_downloads table
+   - Added download_history table
+   - Added download management methods
+
+PENDING FILES TO CREATE:
+1. templates/settings.html (500 lines estimated)
+2. static/css/settings.css (200 lines estimated)
+3. static/js/settings.js (300 lines estimated)
+
+PENDING FILES TO MODIFY:
+1. app.py (large modifications needed)
+   - Import integration modules
+   - Initialize clients
+   - Add REST API endpoints
+   - Add Telegram webhook
+   - Hook into IPT scanner
+   - Add connection monitoring
+2. templates/index.html (moderate modifications)
+   - Add pending approvals section
+   - Add active downloads section
+   - Remove settings modal
+   - Add navigation link
+3. static/js/newgui-app.js (moderate modifications)
+   - Add pendingDownloads reactive state
+   - Add activeDownloads reactive state
+   - Add API calls for approvals
+   - Add qBittorrent status polling
+4. settings.json (configuration additions)
+   - Add all new configuration fields
+5. README.md (major additions)
+   - Document new integration
+   - Add setup instructions
+   - Add troubleshooting section
+
+ESTIMATED REMAINING WORK:
+- app.py integration: ~500-600 lines
+- Settings page creation: ~1000 lines (HTML/CSS/JS)
+- Dashboard updates: ~200 lines
+- Configuration & testing: Several hours
+- Documentation: ~200 lines in README
+
+TOTAL PROJECT SIZE (when complete): ~3,800 lines of new code
+
+================================================================================
+CONTACT POINTS IN EXISTING CODE
+================================================================================
+
+Where to hook into existing FELScanner code:
+
+1. IPT Scanner Callback
+   Location: Look for where iptscanner/monitor-iptorrents.js or
+            iptradar/fetch-once.js returns results
+   Current: Likely writes to iptscanner/data/latest_results.json
+   Action: Add download_manager.process_ipt_discovery() call after
+           new torrents detected
+
+2. Scanner Database Access
+   Location: state.scanner_obj.db (MovieDatabase instance)
+   Current: Already used for movie metadata
+   Action: Pass to download_manager for pending downloads tracking
+
+3. Telegram Configuration
+   Location: app.config['TELEGRAM_TOKEN'], app.config['TELEGRAM_CHAT_ID']
+   Current: Used for scan notifications
+   Action: Reuse same bot for download approvals
+
+4. Settings Loading
+   Location: load_settings() function in app.py
+   Current: Loads from settings.json
+   Action: Add new configuration fields
+
+5. Connection Status Tracking
+   Location: state.connection_status dict
+   Current: Tracks Plex, Telegram, IPTorrents
+   Action: Add 'radarr' and 'qbittorrent' entries
+
+6. REST API Patterns
+   Location: Various @app.route() endpoints
+   Current: /api/status, /api/metrics, /api/connections, etc.
+   Action: Follow same patterns for new endpoints
+
+================================================================================
+PRIORITY ORDER FOR REMAINING WORK
+================================================================================
+
+1. HIGH PRIORITY (Must have for basic functionality):
+   [ ] Wire download manager into app.py
+   [ ] Add Telegram webhook endpoint
+   [ ] Hook into IPT scanner callback
+   [ ] Test basic workflow with manual trigger
+   [ ] Add qBittorrent/Radarr settings to settings.json
+
+2. MEDIUM PRIORITY (Important for usability):
+   [ ] Create settings page with notification rules
+   [ ] Add pending approvals section to dashboard
+   [ ] Add connection monitoring
+   [ ] Test with real IPT torrents
+
+3. LOW PRIORITY (Nice to have):
+   [ ] Add active downloads section to dashboard
+   [ ] Add download history endpoint
+   [ ] Clean up settings modal code completely
+   [ ] Add comprehensive README documentation
+
+================================================================================
+DEBUGGING TIPS
+================================================================================
+
+When things go wrong, check:
+
+1. Telegram not sending messages:
+   - Check bot token is correct
+   - Check chat ID is correct
+   - Check network connectivity
+   - Look for Telegram API errors in logs
+   - Test with telegram_handler.test_connection()
+
+2. Notifications for wrong movies:
+   - Check upgrade_detector configuration
+   - Add debug logging to is_notification_worthy()
+   - Verify database has correct current quality
+   - Check torrent title parsing
+
+3. qBittorrent not receiving torrents:
+   - Check qBittorrent WebUI is accessible
+   - Check host/port configuration
+   - Check authentication (if enabled)
+   - Try manual qbt_client.add_torrent() call
+   - Check qBittorrent logs
+
+4. Wrong folder path:
+   - Verify Radarr root path matches qBittorrent save path
+   - Check radarr_client.get_movie_folder() output
+   - Verify movie exists in Radarr
+   - Check Radarr API response
+
+5. Database errors:
+   - Check table schema was created
+   - Look for SQLite lock errors
+   - Verify JSON serialization/deserialization
+   - Check database file permissions
+
+6. Telegram buttons not working:
+   - Verify webhook is set up
+   - Check callback data format
+   - Look for callback_query in webhook logs
+   - Test with manual Telegram API call
+
+LOG LOCATIONS:
+- Flask logs: Console output or flask.log
+- qBittorrent logs: qBittorrent → Tools → Log
+- Radarr logs: Radarr → System → Logs
+- Telegram: Check bot messages in chat
+- Database: Add logging to MovieDatabase methods
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================
