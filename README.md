@@ -1,196 +1,156 @@
-# FELScanner
+# FELScanner (newgui branch)
 
-FELScanner is a web application that scans your Plex library for movies with Dolby Vision (focusing on Profile 7 FEL) and TrueHD Atmos content. It can create and manage collections in your Plex library based on these audio/video features, and includes an integrated IPTorrents scanner to monitor for new Dolby Vision content.
+FELScanner is a Dolby Vision/TrueHD intelligence layer for Plex. It crawls your library, curates collections, produces detailed reports, and now ships with a Vue/Tailwind control center that surfaces live Dolby Vision metrics, Atmos coverage, and IPTorrents discoveries at a glance.
 
-## Features
+## Key Capabilities
 
-- **Advanced Dolby Vision Detection**: Identify movies with various Dolby Vision profiles, with special focus on Profile 7 FEL (Full Enhancement Layer)
-- **TrueHD Atmos Detection**: Find movies with Dolby TrueHD Atmos audio tracks
-- **Automatic Collection Management**: Create and maintain Plex collections for different content types
-- **Detailed Reports**: Generate CSV and JSON reports with comprehensive movie information
-- **Web Interface**: User-friendly interface with dark mode support
-- **IPTorrents Scanner**: Integrated tool to monitor IPTorrents for new Dolby Vision content
-- **Cloudflare Bypass via FlareSolverr**: Seamlessly solve Cloudflare challenges by proxying IPTorrents requests through FlareSolverr
+- **Plex Dolby Vision Profiler** – classifies every movie by Dolby Vision profile (highlighting Profile 7 FEL), FEL/MEL status, and Atmos availability.
+- **Smart Collections** – keeps Plex collections (All DV, FEL, Atmos) in sync based on scan results with one-click verify & repair.
+- **Insight Dashboard (Vue + Tailwind)** – the landing page (`/`) shows live scan status, DV/Atmos ratios, FEL overlaps, yearly growth trends, recent additions, connection health, and cached IPTorrents hits.
+- **Detailed Exports** – generates JSON/CSV snapshots (`exports/`) with per-title metadata including bitrate, file size, and audio tracks.
+- **FlareSolverr-powered IPTorrents Monitor** – polls IPTorrents via FlareSolverr, tracks new FEL releases, and exposes cached results to the dashboard.
+- **REST endpoints for automation** – JSON APIs expose scan state, rich DV metrics, report manifests, and connection telemetry for external tooling.
 
-## Configuration and Security
-
-FELScanner requires credentials for several external services. To ensure security, sensitive information can be provided in two ways:
-
-### Environment Variables
-
-You can provide credentials via environment variables, which will take precedence over any settings in the configuration files:
+## Architecture Overview
 
 ```
-# Plex configuration
-PLEX_URL=http://your-plex-server:32400
-PLEX_TOKEN=your_plex_token_here
-LIBRARY_NAME=Movies
-
-# Telegram configuration (optional)
-TELEGRAM_ENABLED=true/false
-TELEGRAM_TOKEN=your_telegram_bot_token
-TELEGRAM_CHAT_ID=your_telegram_chat_id
-
-# IPTorrents configuration (optional)
-IPT_UID=your_iptorrents_uid
-IPT_PASS=your_iptorrents_passkey
+FELScanner (Flask)
+├── app.py                 # Flask routes, background jobs, REST endpoints
+├── scanner.py             # Plex scanning engine, SQLite persistence
+├── templates/
+│   ├── index.html         # Vue/Tailwind single-page control center
+│   ├── dashboard.html     # Legacy dashboard view
+│   ├── settings.html      # Legacy settings view
+│   └── iptscanner.html    # Legacy IPTorrents settings
+├── static/js/
+│   ├── newgui-app.js      # Vue app powering the new control center
+│   └── main.js            # Legacy dashboard interactions
+├── iptscanner/
+│   ├── fetch-once.js      # FlareSolverr one-shot fetch
+│   ├── monitor-iptorrents.js # Background monitor (Node.js)
+│   └── package.json       # Node dependencies (axios, cheerio, cron, sqlite3)
+└── exports/, data/        # Generated reports, SQLite movie DB
 ```
 
-See the `.env.example` file for a complete list of available environment variables.
+### Backend data flow
 
-### FlareSolverr
+1. `scanner.PlexDVScanner` walks your Plex movie library via PlexAPI, captures profile/Atmos metadata, and stores results in `exports/movie_database.db`.
+2. REST helpers in `app.py` compute roll-up metrics (profile distribution, FEL/Atmos overlaps, growth by year, quality averages) and expose them under `/api/metrics`.
+3. `/api/status` reports scan/monitor state and last collection changes; `/api/connections` summarizes Plex/IPT/Telegram health.
+4. IPTorrents fetches flow through `run_ipt_scanner()` → `iptradar/fetch-once.js` → FlareSolverr → cached JSON under `iptscanner/data/latest_results.json`.
 
-The IPTorrents scanner relies on [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) to bypass Cloudflare challenges. Launch FlareSolverr alongside FELScanner and point the IPT settings panel at its HTTP endpoint (defaults to `http://localhost:8191`). A quick one-liner to start it with Docker:
+### New REST endpoints
 
+| Endpoint            | Description                                          |
+|---------------------|------------------------------------------------------|
+| `GET /api/status`   | Scan/monitor state plus last DV/Atmos counts         |
+| `GET /api/metrics`  | Dolby Vision analytics (profiles, overlaps, quality) |
+| `GET /api/reports`  | Recent report manifest (filename, timestamp, size)   |
+| `GET /api/connections` | Plex/IPT/Telegram connection status               |
+| `POST /actions/scan`| Trigger full scan (`operation=scan` or `verify`)     |
+| `POST /actions/monitor` | Start/stop monitor (`action=start|stop`)        |
+| `POST /actions/ipt-fetch` | Force an IPTorrents fetch via FlareSolverr   |
+
+## Requirements
+
+- Python 3.9+ (tested on macOS/Linux)
+- Node.js 18+ (for IPT monitor scripts)
+- Plex server reachable via URL/token
+- FlareSolverr ≥ v3 (Chromium solving Cloudflare) exposed to FELScanner
+- IPTorrents cookies (`uid`, `pass`) with active account
+
+## Installation & Setup
+
+### 1. Clone and branch
+```bash
+git clone https://github.com/rohanpandula/FELScanner.git
+cd FELScanner
+git checkout newgui
+```
+
+### 2. Python environment
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+PIP_USER=false pip install -r requirements.txt
+```
+
+### 3. IPTorrents Node modules
+```bash
+cd iptscanner
+npm install
+cd ..
+```
+
+### 4. Provide credentials
+
+Either export environment vars or create `.env` (keys mirror `.env.example`):
+```bash
+export PLEX_URL="http://10.0.0.104:32400"
+export PLEX_TOKEN="DyEmuNtvXz29zQFqGrHn"
+export LIBRARY_NAME="Movies"
+export IPT_UID="<ipt uid>"
+export IPT_PASS="<ipt pass>"
+export FLARESOLVERR_URL="http://localhost:8191"
+```
+
+If using `.env`, run `dotenv run` or ensure your process manager loads it.
+
+### 5. Launch FlareSolverr
 ```bash
 docker run -d --name flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest
 ```
 
-If you run FlareSolverr elsewhere, update the “FlareSolverr URL” field in FELScanner’s settings so the scraper can route requests through that proxy.
-
-### Settings Panel
-
-All credentials and configuration options can also be set through the web interface's settings panel. However, for production deployments, using environment variables is recommended for better security.
-
-### Security Best Practices
-
-To keep your installation secure, follow these guidelines:
-
-1. **Use Environment Variables**: Always use environment variables for credentials in production.
-2. **Secure the Host**: Run the application behind a reverse proxy with HTTPS enabled.
-3. **Limit Access**: Use authentication on your reverse proxy to restrict access to authorized users.
-4. **Regular Updates**: Keep the application and its dependencies updated.
-5. **Credential Isolation**: Use a dedicated Plex user with limited permissions for this application.
-
-**Important Security Notes:**
-- Never commit your `settings.json` file to version control
-- Protect your Docker-Compose file if you include sensitive environment variables
-- Set appropriate file permissions to restrict access to configuration files
-- Use Docker volumes to persist settings outside the container
-
-## Project Structure
-
-### Core Components
-
-- **`app.py`**: The main Flask application that handles routing, API endpoints, and orchestrates the scanning and collection management.
-- **`scanner.py`**: The core scanning engine that connects to Plex, analyzes media files for Dolby Vision/Atmos features, and updates the internal database.
-- **`templates/index.html`**: The single-page web interface template that provides access to all features.
-- **`static/js/main.js`**: Client-side JavaScript handling UI interactions, API calls, and dynamic content rendering.
-
-### IPTScanner Module
-
-- **`iptscanner/`**: Directory containing the IPTorrents scanning functionality.
-  - **`iptscanner.py`**: Python wrapper for the Node.js script, integrated with the main app.
-  - **`monitor-iptorrents.js`**: Node.js script that coordinates IPTorrents polling through FlareSolverr and tracks previously seen torrents.
-  - **`package.json`**: Node.js dependencies for the IPTScanner.
-
-### Configuration Files
-
-- **`settings.json`**: Stores application settings (created automatically on first run)
-- **`requirements.txt`**: Python dependencies for the main application.
-- **`docker-compose.yml`**: Configuration for running the application with Docker Compose.
-- **`Dockerfile`**: Instructions for building the Docker image, including setup for both Python and Node.js environments.
-- **`.env.example`**: Example environment variables file to copy and customize.
-
-### Data Storage
-
-- **`data/`**: Directory containing application data.
-- **`exports/`**: Directory where scan reports and exports are stored.
-
-## Installation
-
-### Docker Installation (Recommended)
-
+### 6. Start FELScanner
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/FELScanner.git
-cd FELScanner
+PIP_USER=false FLASK_APP=app .venv/bin/python -m flask run --host=0.0.0.0 --port=5555
+```
+Visit `http://127.0.0.1:5555/` for the Vue dashboard. Legacy views remain at `/dashboard`, `/settings`, `/iptscanner`, `/reports`.
 
-# Copy the environment variables example file
-cp .env.example .env
-
-# Edit .env with your credentials
-nano .env
-
-# Start the container
-docker-compose up -d
+### 7. Node monitor (optional)
+For continuous IPT polling outside of Flask:
+```bash
+cd iptscanner
+node monitor-iptorrents.js
 ```
 
-If you want to validate connectivity to Plex before starting the stack you can run the bundled helper script:
+## Dashboard Guide (new GUI)
 
-```bash
-PLEX_URL=http://your-plex-server:32400 \
-PLEX_TOKEN=your_plex_token_here \
-./check-plex.sh
-```
+- **Library snapshot** – total DV/FEL/Atmos counts with percent-of-library badges.
+- **Recent DV additions** – top eight titles (profile, Atmos, FEL, bitrate, file size).
+- **Profile distribution (Chart.js)** – doughnut chart of DV profile mix with light/dark toggle.
+- **Atmos & FEL insights** – overlap numbers, average DV bitrate and file size.
+- **Monitor controls** – buttons to scan, verify collections, start/stop monitor, and force IPT fetch.
+- **Connections** – real-time status for Plex, IPTorrents (last/next sync, 24h delta), Telegram, API server.
+- **Yearly growth** – normalized bar list of DV additions by year.
+- **Recent reports** – quick access to generated JSON/CSV (download via `/reports`).
+- **IPTorrents cache** – table of cached torrents (title, size, seeds/leechers, relative added).
 
-The script exits with a non-zero status and prints a descriptive error if the Plex server cannot be reached.
+## Technical Notes
 
-### Manual Installation
-
-1. Install Python 3.10+ and Node.js 14+
-2. Install Python dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Install Node.js dependencies for IPTScanner:
-   ```bash
-   cd iptscanner
-   npm install
-   ```
-4. Run the application:
-   ```bash
-   python app.py
-   ```
-
-## First-Time Setup
-
-1. Access the application at `http://your-server-ip:5000`
-2. Follow the setup wizard to configure:
-   - Plex server connection (URL and token)
-   - Movie library to scan
-   - Collection names
-   - IPTorrents scanner settings (optional)
-
-## Accessing the Web UI
-
-FELScanner ships with a full-featured single-page interface that lives at the root URL of the server. Once the Flask app is running you can open `http://<host>:5000/` to:
-
-- Launch the guided setup wizard for first-time configuration.
-- Trigger scans, verify Plex collections, or start the IPTorrents monitor.
-- Download generated reports and review recent Dolby Vision/Atmos findings.
-- Adjust Plex, Telegram, and IPTorrents settings directly from the browser without touching configuration files.
-
-The UI is backed by the endpoints defined in `app.py` and the assets under `templates/` and `static/`, so hosting the application through Docker or via `python app.py` automatically exposes the management dashboard.
-
-## Persistent Data
-
-The application stores its data in the following locations:
-
-- **Docker installation**: In the `/data` volume
-- **Manual installation**: In the application directory
-
-Important data files:
-- `settings.json`: Configuration settings
-- `data/movie_database.db`: SQLite database storing movie metadata
-- `exports/`: Scan reports (CSV/JSON)
-- `iptscanner/known_torrents.json`: List of previously detected torrents
+- **SQLite schema** is in `exports/movie_database.db` (table `movies` with `extra_data` JSON). `_compute_dolby_metrics()` runs SQL aggregates to populate the dashboard metrics.
+- **Tailwind CSS** is loaded from CDN; Jinja variables are wrapped in `{% raw %}` to avoid Vue template conflicts.
+- **Vue 3 Composition API** is bundled inline via CDN (no build step). Chart.js is also CDN-loaded.
+- **Auto refresh** polls status/connections every 15 s; manual refresh hits `/api/metrics`,`/api/reports`,`/api/iptscanner/torrents`.
+- **IPT fetch** leverages `iptradar/fetch-once.js` (axios + cheerio) invoked from Flask via `subprocess`, writing normalized results to `latest_results.json` and updating config caches for cookies/user agent.
+- **Legacy templates** (`dashboard.html`, etc.) remain for backward compatibility and as reference while the new GUI evolves.
 
 ## Troubleshooting
 
-- **Plex Connection Issues**: Ensure your Plex URL includes the protocol (e.g., `http://your-plex-ip:32400`) and your token is valid.
-- **IPTScanner Problems**: Verify your IPTorrents cookies are valid by using the "Test Login" button in settings.
-- **Docker Networking**: Use `--network host` in Docker or the Host network type in Unraid to solve Plex connection issues.
-- **Environment Variables**: If your settings aren't being applied, ensure environment variables are properly configured and that Docker has access to them.
+| Symptom | Fix |
+|---------|-----|
+| Blank dashboard (dark background only) | Hard refresh (Ctrl/Cmd + Shift + R) to bust cached Tailwind/Vue assets. Ensure `static/js/newgui-app.js` is served (check browser console).
+| IPTorrents status "Cookies not configured" | Update UID/pass in IPT settings (legacy `/iptscanner`) or `.env`. Confirm FlareSolverr URL is reachable.
+| FlareSolverr errors | Restart container, check logs (`docker logs flaresolverr`). Ensure solver version supports Chromium downloads.
+| `movie_database.db` missing | Run a full scan (`POST /actions/scan`). Metrics require at least one completed scan.
+| Plex scan stuck | Verify Plex URL/token; run `./check-plex.sh` for connectivity test.
 
-## Development
+## Contributing
 
-FELScanner is built with:
-- Python 3.10+ and Flask for the backend
-- Bootstrap 5 for the frontend
-- PlexAPI for Plex Media Server integration
-- Node.js for the IPTorrents scraping functionality
+- Run `flake8`/`black` for Python and `eslint` (if configured) for JS before PRs.
+- Keep commits focused; document UI changes with before/after context.
+- Feature branches should target `newgui` until the redesign merges back to `main`.
 
-## Credits
+## License
 
-Developed by [rohanpandula](https://github.com/rohanpandula) 
+MIT © 2025 Rohan Pandula
