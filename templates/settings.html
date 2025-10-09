@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Settings · FELScanner{% endblock %}
+
+{% block content %}
+<section>
+    <h2>Application Settings</h2>
+    <form method="post" action="{{ url_for('settings_page') }}">
+        <fieldset>
+            <legend>Plex connection</legend>
+            <div class="field-group">
+                <label for="plex-url">Plex URL</label>
+                <input id="plex-url" type="text" name="plex_url" value="{{ settings.plex_url }}">
+            </div>
+            <div class="field-group">
+                <label for="plex-token">Plex token</label>
+                <input id="plex-token" type="text" name="plex_token" value="{{ settings.plex_token }}">
+            </div>
+            <div class="field-group">
+                <label for="library-name">Library name</label>
+                <input id="library-name" type="text" name="library_name" value="{{ settings.library_name }}">
+            </div>
+            <button class="btn btn-secondary" type="submit" name="action" value="test-plex">Test Plex connection</button>
+        </fieldset>
+
+        <fieldset>
+            <legend>Collections</legend>
+            <div class="checkbox-row">
+                <input type="checkbox" id="collection-enable-dv" name="collection_enable_dv" {% if settings.collection_enable_dv %}checked{% endif %}>
+                <label for="collection-enable-dv">Enable Dolby Vision collection</label>
+            </div>
+            <div class="field-group">
+                <label for="collection-dv">Dolby Vision collection name</label>
+                <input id="collection-dv" type="text" name="collection_name_all_dv" value="{{ settings.collection_name_all_dv }}">
+            </div>
+
+            <div class="checkbox-row">
+                <input type="checkbox" id="collection-enable-p7" name="collection_enable_p7" {% if settings.collection_enable_p7 %}checked{% endif %}>
+                <label for="collection-enable-p7">Enable Profile 7 FEL collection</label>
+            </div>
+            <div class="field-group">
+                <label for="collection-p7">Profile 7 FEL collection name</label>
+                <input id="collection-p7" type="text" name="collection_name_profile7" value="{{ settings.collection_name_profile7 }}">
+            </div>
+
+            <div class="checkbox-row">
+                <input type="checkbox" id="collection-enable-atmos" name="collection_enable_atmos" {% if settings.collection_enable_atmos %}checked{% endif %}>
+                <label for="collection-enable-atmos">Enable TrueHD Atmos collection</label>
+            </div>
+            <div class="field-group">
+                <label for="collection-atmos">TrueHD Atmos collection name</label>
+                <input id="collection-atmos" type="text" name="collection_name_truehd_atmos" value="{{ settings.collection_name_truehd_atmos }}">
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <legend>Automation &amp; reports</legend>
+            <div class="field-group">
+                <label for="scan-frequency">Scan frequency (hours)</label>
+                <input id="scan-frequency" type="number" min="1" name="scan_frequency" value="{{ settings.scan_frequency }}">
+            </div>
+            <div class="field-group">
+                <label for="auto-start">Auto start behaviour</label>
+                <select id="auto-start" name="auto_start">
+                    {% for option in ['none', 'scan', 'verify', 'monitor'] %}
+                        <option value="{{ option }}" {% if settings.auto_start == option %}selected{% endif %}>{{ option|capitalize }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="field-group">
+                <label for="max-reports-size">Keep last N reports</label>
+                <input id="max-reports-size" type="number" min="1" name="max_reports_size" value="{{ settings.max_reports_size }}">
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="use-whole-numbers" name="use_whole_numbers" {% if settings.use_whole_numbers %}checked{% endif %}>
+                <label for="use-whole-numbers">Display counts as whole numbers</label>
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <legend>Telegram notifications</legend>
+            <div class="checkbox-row">
+                <input type="checkbox" id="telegram-enabled" name="telegram_enabled" {% if settings.telegram_enabled %}checked{% endif %}>
+                <label for="telegram-enabled">Enable Telegram notifications</label>
+            </div>
+            <div class="field-group">
+                <label for="telegram-token">Bot token</label>
+                <input id="telegram-token" type="text" name="telegram_token" value="{{ settings.telegram_token }}">
+            </div>
+            <div class="field-group">
+                <label for="telegram-chat-id">Chat ID</label>
+                <input id="telegram-chat-id" type="text" name="telegram_chat_id" value="{{ settings.telegram_chat_id }}">
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-all" name="telegram_notify_all_updates" {% if settings.telegram_notify_all_updates %}checked{% endif %}>
+                <label for="notify-all">Notify on all updates</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-new" name="telegram_notify_new_movies" {% if settings.telegram_notify_new_movies %}checked{% endif %}>
+                <label for="notify-new">Notify on new movies</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-dv" name="telegram_notify_dv" {% if settings.telegram_notify_dv %}checked{% endif %}>
+                <label for="notify-dv">Notify on Dolby Vision matches</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-p7" name="telegram_notify_p7" {% if settings.telegram_notify_p7 %}checked{% endif %}>
+                <label for="notify-p7">Notify on Profile 7 matches</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-atmos" name="telegram_notify_atmos" {% if settings.telegram_notify_atmos %}checked{% endif %}>
+                <label for="notify-atmos">Notify on Atmos matches</label>
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <legend>General</legend>
+            <div class="checkbox-row">
+                <input type="checkbox" id="setup-completed" name="setup_completed" {% if settings.setup_completed %}checked{% endif %}>
+                <label for="setup-completed">Mark initial setup as completed</label>
+            </div>
+        </fieldset>
+
+        <button class="btn" type="submit" name="action" value="save">Save settings</button>
+    </form>
+</section>
+{% endblock %}

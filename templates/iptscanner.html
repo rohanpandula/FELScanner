@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}IPTScanner · FELScanner{% endblock %}
+
+{% block content %}
+<section>
+    <h2>IPTorrents Scanner</h2>
+    <p class="muted">
+        Configure cookies and the FlareSolverr endpoint so FELScanner can monitor IPTorrents for new Dolby Vision releases.
+    </p>
+
+    <form method="post" action="{{ url_for('iptscanner_page') }}">
+        <input type="hidden" name="action" value="save">
+
+        <fieldset>
+            <legend>Prowlarr fallback</legend>
+            <p class="muted">
+                The new FlareSolverr flow does not require Prowlarr, but legacy fields are kept for compatibility.
+            </p>
+            <div class="field-group">
+                <label for="prowlarr-url">Base URL</label>
+                <input id="prowlarr-url" type="text" name="prowlarr_url" value="{{ prowlarr.baseUrl }}">
+            </div>
+            <div class="field-group">
+                <label for="prowlarr-api-key">API key</label>
+                <input id="prowlarr-api-key" type="text" name="prowlarr_api_key" value="{{ prowlarr.apiKey }}">
+            </div>
+            <div class="field-group">
+                <label for="prowlarr-indexer-id">Indexer ID</label>
+                <input id="prowlarr-indexer-id" type="number" min="0" name="prowlarr_indexer_id" value="{{ prowlarr.indexerId }}">
+            </div>
+            <button class="btn btn-secondary" type="submit" name="action" value="test-login">Test legacy connection</button>
+        </fieldset>
+
+        <fieldset>
+            <legend>Cookies</legend>
+            <div class="field-group">
+                <label for="ipt-uid">UID cookie</label>
+                <input id="ipt-uid" type="text" name="ipt_uid" value="{{ cookies.uid }}">
+            </div>
+            <div class="field-group">
+                <label for="ipt-pass">Pass cookie</label>
+                <input id="ipt-pass" type="text" name="ipt_pass" value="{{ cookies.pass }}">
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <legend>FlareSolverr</legend>
+            <div class="field-group">
+                <label for="solver-url">Solver URL</label>
+                <input id="solver-url" type="text" name="solver_url" value="{{ solver_url }}">
+            </div>
+            <div class="field-group">
+                <label for="solver-timeout">Timeout (ms)</label>
+                <input id="solver-timeout" type="number" min="1000" step="1000" name="solver_timeout" value="{{ solver_timeout }}">
+            </div>
+        </fieldset>
+
+        <button class="btn" type="submit">Save settings</button>
+    </form>
+</section>
+
+<section>
+    <h2>Cached Torrents</h2>
+    {% if recent_torrents %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Title</th>
+                    <th>Size</th>
+                    <th>Seeders</th>
+                    <th>Leechers</th>
+                    <th>Added</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in recent_torrents %}
+                    <tr>
+                        <td>{{ item.name }}</td>
+                        <td>{{ item.size or 'N/A' }}</td>
+                        <td>{{ item.seeders }}</td>
+                        <td>{{ item.leechers }}</td>
+                        <td>{{ item.added or item.addedRaw }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p class="muted">No cached torrents yet.</p>
+    {% endif %}
+</section>
+{% endblock %}

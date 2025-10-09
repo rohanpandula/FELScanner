@@ -2377,6 +2377,20 @@ def iptscanner_page():
         action = form.get('action', 'save').lower()
 
         if action == 'test-login':
+            uid_val = form.get('ipt_uid', '').strip()
+            pass_val = form.get('ipt_pass', '').strip()
+            if uid_val:
+                config.setdefault('cookies', {})['uid'] = uid_val
+            if pass_val:
+                config.setdefault('cookies', {})['pass'] = pass_val
+
+            solver_url_input = form.get('solver_url', '').strip()
+            if solver_url_input:
+                config['solverUrl'] = solver_url_input
+            solver_timeout_input = form.get('solver_timeout', '').strip()
+            if solver_timeout_input.isdigit():
+                config['solverTimeout'] = int(solver_timeout_input)
+
             # Legacy form fields are ignored; defer to the shared IPT login tester.
             success, message = _perform_ipt_login_test(config)
             flash(message, 'success' if success else 'error')
@@ -2409,6 +2423,16 @@ def iptscanner_page():
         if interval:
             config['checkInterval'] = interval
 
+        cookies_cfg = config.setdefault('cookies', {})
+        cookies_cfg['uid'] = form.get('ipt_uid', cookies_cfg.get('uid', '')).strip()
+        cookies_cfg['pass'] = form.get('ipt_pass', cookies_cfg.get('pass', '')).strip()
+        solver_url_input = form.get('solver_url', '').strip()
+        solver_timeout_input = form.get('solver_timeout', '').strip()
+        if solver_url_input:
+            config['solverUrl'] = solver_url_input
+        if solver_timeout_input.isdigit():
+            config['solverTimeout'] = int(solver_timeout_input)
+
         saved = _save_ipt_config(config)
         if saved:
             schedule_ipt_scanner(config)
@@ -2418,19 +2442,14 @@ def iptscanner_page():
         )
         return redirect(url_for('iptscanner_page'))
 
-    ipt_settings = {
-        'prowlarr_url': prowlarr_cfg.get('baseUrl', ''),
-        'prowlarr_api_key': prowlarr_cfg.get('apiKey', ''),
-        'prowlarr_indexer_id': prowlarr_cfg.get('indexerId', 1),
-        'search_term': config.get('searchTerm', ''),
-        'check_interval': config.get('checkInterval', '0 */2 * * *'),
-        'last_update_time': config.get('lastUpdateTime')
-    }
-
     return render_template(
         'iptscanner.html',
         active_page='iptscanner',
-        settings=ipt_settings
+        prowlarr=prowlarr_cfg,
+        cookies=config.setdefault('cookies', {'uid': '', 'pass': ''}),
+        solver_url=config.get('solverUrl', 'http://localhost:8191'),
+        solver_timeout=config.get('solverTimeout', 60000),
+        recent_torrents=_load_recent_ipt_results(config, limit=25)
     )
 
 

@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · FELScanner{% endblock %}
+
+{% block content %}
+<section>
+    <h2>Library Overview</h2>
+    <p class="muted">
+        Using Plex library <strong>{{ library_name or 'Not configured' }}</strong>
+        at <strong>{{ plex_url or 'No URL set' }}</strong>.
+    </p>
+    <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-top:1rem;">
+        <div style="flex:1 1 160px;background:#f8fafc;border-radius:6px;padding:1rem;">
+            <h3 style="margin-top:0;font-size:1rem;">Total titles</h3>
+            <p style="margin:0;font-size:1.75rem;">{{ last_scan_results.total or 0 }}</p>
+        </div>
+        <div style="flex:1 1 160px;background:#f8fafc;border-radius:6px;padding:1rem;">
+            <h3 style="margin-top:0;font-size:1rem;">Dolby Vision</h3>
+            <p style="margin:0;font-size:1.75rem;">{{ last_scan_results.dv_count or 0 }}</p>
+        </div>
+        <div style="flex:1 1 160px;background:#f8fafc;border-radius:6px;padding:1rem;">
+            <h3 style="margin-top:0;font-size:1rem;">Profile 7 FEL</h3>
+            <p style="margin:0;font-size:1.75rem;">{{ last_scan_results.p7_count or 0 }}</p>
+        </div>
+        <div style="flex:1 1 160px;background:#f8fafc;border-radius:6px;padding:1rem;">
+            <h3 style="margin-top:0;font-size:1rem;">TrueHD Atmos</h3>
+            <p style="margin:0;font-size:1.75rem;">{{ last_scan_results.atmos_count or 0 }}</p>
+        </div>
+    </div>
+</section>
+
+<section>
+    <h2>Current Status</h2>
+    <p><strong>Scan status:</strong> {{ scan_results.get('status', 'idle')|capitalize }}</p>
+    <p><strong>Active scan:</strong> {{ 'Yes' if is_scanning else 'No' }}</p>
+    <p><strong>Monitor mode:</strong> {{ 'Running' if monitor_active else 'Stopped' }}</p>
+    <p><strong>Last scan:</strong> {{ last_scan_time.strftime('%Y-%m-%d %H:%M') if last_scan_time else 'Never' }}</p>
+    <p><strong>Next scan:</strong> {{ next_scan_time.strftime('%Y-%m-%d %H:%M') if next_scan_time else 'Not scheduled' }}</p>
+
+    <h3>Quick actions</h3>
+    <div>
+        <form class="inline" method="post" action="{{ url_for('start_scan_action') }}">
+            <input type="hidden" name="operation" value="scan">
+            <button class="btn" {% if is_scanning %}disabled{% endif %}>Start Scan</button>
+        </form>
+        <form class="inline" method="post" action="{{ url_for('start_scan_action') }}">
+            <input type="hidden" name="operation" value="verify">
+            <button class="btn btn-secondary" {% if is_scanning %}disabled{% endif %}>Verify Collections</button>
+        </form>
+        <form class="inline" method="post" action="{{ url_for('monitor_action') }}">
+            <input type="hidden" name="action" value="start">
+            <button class="btn" {% if monitor_active or is_scanning %}disabled{% endif %}>Start Monitor</button>
+        </form>
+        <form class="inline" method="post" action="{{ url_for('monitor_action') }}">
+            <input type="hidden" name="action" value="stop">
+            <button class="btn btn-danger" {% if not monitor_active %}disabled{% endif %}>Stop Monitor</button>
+        </form>
+    </div>
+</section>
+
+<section>
+    <h2>Connections</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Service</th>
+                <th>Status</th>
+                <th>Detail</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for name, details in connection_status.items() %}
+                <tr>
+                    <td>{{ name|capitalize }}</td>
+                    <td>{{ details.status|capitalize if details.status else 'Unknown' }}</td>
+                    <td>{{ details.message or 'No detail available' }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>Recent Reports</h2>
+    {% if recent_reports %}
+        <ul style="margin:0;padding-left:1.25rem;">
+            {% for report in recent_reports %}
+                <li>
+                    {{ report.date.strftime('%Y-%m-%d %H:%M') }} ·
+                    <a href="{{ url_for('download_report', filename=report.filename) }}">{{ report.filename }}</a>
+                    ({{ report.display_size }})
+                </li>
+            {% endfor %}
+        </ul>
+        <p style="margin-top:0.75rem;">
+            <a href="{{ url_for('reports_page') }}">View all reports</a>
+        </p>
+    {% else %}
+        <p class="muted">No reports yet. Run a scan to generate one.</p>
+    {% endif %}
+</section>
+
+<section>
+    <h2>Latest IPTorrents Matches</h2>
+    {% if ipt_results %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Title</th>
+                    <th>Size</th>
+                    <th>Seeders</th>
+                    <th>Leechers</th>
+                    <th>Links</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in ipt_results %}
+                    <tr>
+                        <td>{{ item.name or 'Unknown title' }}</td>
+                        <td>{{ item.size or 'N/A' }}</td>
+                        <td>{{ item.seeders }}</td>
+                        <td>{{ item.leechers }}</td>
+                        <td>
+                            {% if item.link %}
+                                <a href="{{ item.link }}">View</a>
+                            {% else %}
+                                <span class="muted">N/A</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p class="muted">No cached results yet. Configure cookies and run a fetch from the IPTScanner page.</p>
+    {% endif %}
+</section>
+{% endblock %}

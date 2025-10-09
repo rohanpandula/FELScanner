@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Reports · FELScanner{% endblock %}
+
+{% block content %}
+<section>
+    <h2>Generated Reports</h2>
+    {% if reports %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Created</th>
+                    <th>File</th>
+                    <th>Size</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for report in reports %}
+                    <tr>
+                        <td>{{ report.date.strftime('%Y-%m-%d %H:%M') }}</td>
+                        <td><a href="{{ url_for('download_report', filename=report.filename) }}">{{ report.filename }}</a></td>
+                        <td>{{ report.display_size }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p class="muted">No reports yet. Run a scan to generate one.</p>
+    {% endif %}
+</section>
+{% endblock %}
