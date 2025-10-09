@@ -41,6 +41,7 @@ createApp({
             quality: { avg_file_size_gb: 0, avg_bitrate_mbps: 0 },
             recent: []
         });
+        const reports = ref([]);
         const iptTorrents = ref([]);
         const connections = reactive({});
         const actionLoading = reactive({ scan: false, verify: false, monitor: false, ipt: false });
@@ -110,7 +111,9 @@ createApp({
             Vue.nextTick(updateChart);
         };
 
-        const refreshReports = async () => Promise.resolve();
+        const refreshReports = async () => {
+            reports.value = await fetchJSON('/api/reports');
+        };
 
         const refreshIPT = async () => {
             try {
@@ -132,6 +135,7 @@ createApp({
             await Promise.all([
                 refreshStatus(),
                 refreshMetrics(),
+                refreshReports(),
                 refreshIPT(),
                 refreshConnections()
             ]).catch((error) => console.error('Refresh error', error));

@@ -78,6 +78,17 @@
                 <section class="grid gap-6 lg:grid-cols-3">
                     <div class="col-span-2 space-y-6">
                         <div class="rounded-3xl border border-slate-800 bg-slateglass p-6 backdrop-blur-xl">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <h3 class="text-xl font-semibold text-white">Dolby Vision Profiles</h3>
+                                    <p class="text-sm text-slate-400">Distribution across active movies</p>
+                                </div>
+                                <button @click="toggleChartTheme" class="rounded-md border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800">Toggle theme</button>
+                            </div>
+                            <canvas id="profileChart" class="mt-6"></canvas>
+                        </div>
+
+                        <div class="rounded-3xl border border-slate-800 bg-slateglass p-6 backdrop-blur-xl">
                             <h3 class="text-xl font-semibold text-white">Recent Dolby Vision Additions</h3>
                             <p class="text-sm text-slate-400">Latest titles enriched with Dolby Vision metadata.</p>
                             <div class="mt-4 space-y-3">
@@ -152,9 +163,18 @@
                         </div>
                     </div>
 
-                    <div class="rounded-3xl border border-slate-800 bg-slateglass p-6 backdrop-blur-xl hidden lg:block">
+                    <div class="rounded-3xl border border-slate-800 bg-slateglass p-6 backdrop-blur-xl">
                         <h3 class="text-xl font-semibold text-white">Recent Reports</h3>
-                        <p class="mt-4 text-sm text-slate-500">Reports panel hidden in the streamlined layout.</p>
+                        <ul class="mt-4 space-y-3 text-sm text-slate-300">
+                            <li v-for="report in reports" :key="report.filename" class="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-2">
+                                <div>
+                                    <p class="font-medium text-white">{{ report.filename }}</p>
+                                    <p class="text-xs text-slate-500">{{ formatTimestamp(report.date) }}</p>
+                                </div>
+                                <span class="text-xs text-slate-400">{{ report.display_size }}</span>
+                            </li>
+                            <li v-if="!reports.length" class="text-sm text-slate-400">No reports yet.</li>
+                        </ul>
                     </div>
                 </section>
 
