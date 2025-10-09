@@ -10,10 +10,11 @@ import pytz
 import shutil
 from datetime import datetime, timedelta
 import sqlite3
-from statistics import mean
+from statistics import mean, median
 from flask_compress import Compress
 from plexapi.server import PlexServer
 from scanner import PlexDVScanner
+from metadata_service import MetadataService
 import sys
 import subprocess
 import tempfile
@@ -21,6 +22,15 @@ from typing import Any, Awaitable, Callable, Optional
 from urllib.parse import urlparse
 import re
 from requests import exceptions as requests_exceptions
+
+# Import integration modules
+from integrations import (
+    QBittorrentClient,
+    RadarrClient,
+    UpgradeDetector,
+    TelegramDownloadHandler,
+    DownloadManager
+)
 
 
 # Configure logging
@@ -51,6 +61,8 @@ app.config.update(
     PLEX_URL=os.environ.get('PLEX_URL', ""),
     PLEX_TOKEN=os.environ.get('PLEX_TOKEN', ""),
     LIBRARY_NAME=os.environ.get('LIBRARY_NAME', "Movies"),
+    FFPROBE_PATH=os.environ.get('FFPROBE_PATH') or shutil.which('ffprobe') or 'ffprobe',
+    METADATA_CACHE_FILE=os.path.join(DATA_DIR, "metadata-cache.json"),
     COLLECTION_NAME_ALL_DV="All Dolby Vision",
     COLLECTION_NAME_PROFILE7="DV FEL Profile 7",
     COLLECTION_NAME_TRUEHD_ATMOS="TrueHD Atmos",
@@ -76,6 +88,15 @@ app.config.update(
 notification_queue = None
 notification_thread = None
 
+# Metadata service for EXIF viewer
+metadata_service = MetadataService(
+    cache_path=app.config['METADATA_CACHE_FILE'],
+    plex_url=app.config['PLEX_URL'] or None,
+    plex_token=app.config['PLEX_TOKEN'] or None,
+    library_name=app.config['LIBRARY_NAME'] or None,
+    ffprobe_path=app.config['FFPROBE_PATH']
+)
+
 # Application state
 class AppState:
     def __init__(self):
@@ -96,7 +117,9 @@ class AppState:
         self.connection_status = {
             'plex': {'status': 'unknown', 'message': 'Not connected', 'last_check': None, 'next_check': None},
             'telegram': {'status': 'unknown', 'message': 'Not connected', 'last_check': None, 'next_check': None},
-            'iptorrents': {'status': 'unknown', 'message': 'Not connected', 'last_check': None, 'next_check': None}
+            'iptorrents': {'status': 'unknown', 'message': 'Not connected', 'last_check': None, 'next_check': None},
+            'radarr': {'status': 'unknown', 'message': 'Not connected', 'last_check': None, 'next_check': None},
+            'qbittorrent': {'status': 'unknown', 'message': 'Not connected', 'last_check': None, 'next_check': None}
         }
         self.last_plex_check = None
         self.last_telegram_check = None
@@ -104,6 +127,19 @@ class AppState:
 
 # Create application state
 state = AppState()
+
+# Global integration clients
+qbt_client = None
+radarr_client = None
+telegram_download_handler = None
+upgrade_detector = None
+download_manager = None
+
+
+def _truthy_param(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    return value.lower() in {'1', 'true', 'yes', 'on', 'refresh', 'force'}
 
 # Initialize scheduler for periodic connection checks
 scheduler = None
@@ -534,8 +570,8 @@ def _compute_dolby_metrics() -> dict:
         'dv_profiles': [],
         'year_breakdown': [],
         'quality': {
-            'avg_file_size_gb': 0.0,
-            'avg_bitrate_mbps': 0.0
+            'median_file_size_gb': 0.0,
+            'median_bitrate_mbps': 0.0
         },
         'recent': []
     }
@@ -624,8 +660,9 @@ def _compute_dolby_metrics() -> dict:
         file_sizes = []
         bitrates = []
         recent_rows = cur.execute(
-            "SELECT title, dv_profile, dv_fel, has_atmos, last_updated, extra_data "
-            "FROM movies ORDER BY datetime(last_updated) DESC LIMIT 8"
+            "SELECT rating_key, title, dv_profile, dv_fel, has_atmos, last_updated, extra_data "
+            "FROM movies WHERE dv_profile = '7' AND dv_fel = 1 "
+            "ORDER BY datetime(last_updated) DESC LIMIT 8"
         ).fetchall()
         for row in recent_rows or []:
             extra = {}
@@ -642,6 +679,7 @@ def _compute_dolby_metrics() -> dict:
                 bitrates.append(bitrate)
 
             metrics['recent'].append({
+                'rating_key': row['rating_key'],
                 'title': row['title'],
                 'dv_profile': row['dv_profile'],
                 'dv_fel': bool(row['dv_fel']),
@@ -653,9 +691,9 @@ def _compute_dolby_metrics() -> dict:
             })
 
         if file_sizes:
-            metrics['quality']['avg_file_size_gb'] = round(mean(file_sizes), 2)
+            metrics['quality']['median_file_size_gb'] = round(median(file_sizes), 2)
         if bitrates:
-            metrics['quality']['avg_bitrate_mbps'] = round(mean(bitrates), 2)
+            metrics['quality']['median_bitrate_mbps'] = round(median(bitrates), 2)
 
     except Exception as exc:
         app.logger.error(f"Failed to compute Dolby metrics: {exc}")
@@ -938,6 +976,8 @@ def load_settings():
             app.config['COLLECTION_ENABLE_ATMOS'] = settings['collection_enable_atmos']
         if 'auto_start' in settings:
             app.config['AUTO_START_MODE'] = settings['auto_start']
+        if 'ffprobe_path' in settings and settings['ffprobe_path']:
+            app.config['FFPROBE_PATH'] = settings['ffprobe_path']
         if 'max_reports_size' in settings:
             app.config['MAX_REPORTS_SIZE'] = settings['max_reports_size']
             
@@ -987,8 +1027,53 @@ def load_settings():
             except Exception as e:
                 log.error(f"Error parsing last_scan_time: {e}")
                 
+        # Load qBittorrent settings
+        app.config['QBITTORRENT_HOST'] = settings.get('qbittorrent_host', '10.0.0.63')
+        app.config['QBITTORRENT_PORT'] = settings.get('qbittorrent_port', 8080)
+        app.config['QBITTORRENT_USERNAME'] = settings.get('qbittorrent_username', '')
+        app.config['QBITTORRENT_PASSWORD'] = settings.get('qbittorrent_password', '')
+        app.config['QBITTORRENT_CATEGORY'] = settings.get('qbittorrent_category', 'movies-fel')
+        app.config['QBIT_PAUSE_ON_ADD'] = settings.get('qbit_pause_on_add', False)
+        app.config['QBIT_SEQUENTIAL_DOWNLOAD'] = settings.get('qbit_sequential_download', True)
+
+        # Load Radarr settings
+        app.config['RADARR_URL'] = settings.get('radarr_url', '')
+        app.config['RADARR_API_KEY'] = settings.get('radarr_api_key', '')
+        app.config['RADARR_ROOT_PATH'] = settings.get('radarr_root_path', '/mnt/user/Media/Movies/')
+
+        # Load notification rules
+        app.config['NOTIFY_FEL'] = settings.get('notify_fel', True)
+        app.config['NOTIFY_FEL_FROM_P5'] = settings.get('notify_fel_from_p5', True)
+        app.config['NOTIFY_FEL_FROM_HDR'] = settings.get('notify_fel_from_hdr', True)
+        app.config['NOTIFY_FEL_DUPLICATES'] = settings.get('notify_fel_duplicates', False)
+        app.config['NOTIFY_DV'] = settings.get('notify_dv', False)
+        app.config['NOTIFY_DV_FROM_HDR'] = settings.get('notify_dv_from_hdr', True)
+        app.config['NOTIFY_DV_PROFILE_UPGRADES'] = settings.get('notify_dv_profile_upgrades', True)
+        app.config['NOTIFY_ATMOS'] = settings.get('notify_atmos', False)
+        app.config['NOTIFY_ATMOS_ONLY_IF_NO_ATMOS'] = settings.get('notify_atmos_only_if_no_atmos', True)
+        app.config['NOTIFY_ATMOS_WITH_DV_UPGRADE'] = settings.get('notify_atmos_with_dv_upgrade', True)
+        app.config['NOTIFY_RESOLUTION'] = settings.get('notify_resolution', False)
+        app.config['NOTIFY_RESOLUTION_ONLY_UPGRADES'] = settings.get('notify_resolution_only_upgrades', True)
+        app.config['NOTIFY_ONLY_LIBRARY_MOVIES'] = settings.get('notify_only_library_movies', True)
+        app.config['NOTIFY_EXPIRE_HOURS'] = settings.get('notify_expire_hours', 24)
+
+        # Load download notifications
+        app.config['NOTIFY_DOWNLOAD_START'] = settings.get('notify_download_start', True)
+        app.config['NOTIFY_DOWNLOAD_COMPLETE'] = settings.get('notify_download_complete', True)
+        app.config['NOTIFY_DOWNLOAD_ERROR'] = settings.get('notify_download_error', True)
+
         # Log final configuration state after loading
         log.info(f"Configuration after loading settings: SETUP_COMPLETED = {app.config['SETUP_COMPLETED']}")
+        metadata_service.update_config(
+            app.config.get('PLEX_URL') or None,
+            app.config.get('PLEX_TOKEN') or None,
+            app.config.get('LIBRARY_NAME') or None,
+            app.config.get('FFPROBE_PATH')
+        )
+
+        # Initialize integration clients
+        init_integration_clients()
+
         return True
     except Exception as e:
         log.error(f"Error loading settings: {e}")
@@ -1019,7 +1104,39 @@ def save_settings():
             'telegram_notify_p7': app.config['TELEGRAM_NOTIFY_P7'],
             'telegram_notify_atmos': app.config['TELEGRAM_NOTIFY_ATMOS'],
             'setup_completed': app.config['SETUP_COMPLETED'],
-            'last_scan_results': app.config['LAST_SCAN_RESULTS']
+            'last_scan_results': app.config['LAST_SCAN_RESULTS'],
+            'ffprobe_path': app.config['FFPROBE_PATH'],
+            # qBittorrent settings
+            'qbittorrent_host': app.config.get('QBITTORRENT_HOST', '10.0.0.63'),
+            'qbittorrent_port': app.config.get('QBITTORRENT_PORT', 8080),
+            'qbittorrent_username': app.config.get('QBITTORRENT_USERNAME', ''),
+            'qbittorrent_password': app.config.get('QBITTORRENT_PASSWORD', ''),
+            'qbittorrent_category': app.config.get('QBITTORRENT_CATEGORY', 'movies-fel'),
+            'qbit_pause_on_add': app.config.get('QBIT_PAUSE_ON_ADD', False),
+            'qbit_sequential_download': app.config.get('QBIT_SEQUENTIAL_DOWNLOAD', True),
+            # Radarr settings
+            'radarr_url': app.config.get('RADARR_URL', ''),
+            'radarr_api_key': app.config.get('RADARR_API_KEY', ''),
+            'radarr_root_path': app.config.get('RADARR_ROOT_PATH', '/mnt/user/Media/Movies/'),
+            # Notification rules
+            'notify_fel': app.config.get('NOTIFY_FEL', True),
+            'notify_fel_from_p5': app.config.get('NOTIFY_FEL_FROM_P5', True),
+            'notify_fel_from_hdr': app.config.get('NOTIFY_FEL_FROM_HDR', True),
+            'notify_fel_duplicates': app.config.get('NOTIFY_FEL_DUPLICATES', False),
+            'notify_dv': app.config.get('NOTIFY_DV', False),
+            'notify_dv_from_hdr': app.config.get('NOTIFY_DV_FROM_HDR', True),
+            'notify_dv_profile_upgrades': app.config.get('NOTIFY_DV_PROFILE_UPGRADES', True),
+            'notify_atmos': app.config.get('NOTIFY_ATMOS', False),
+            'notify_atmos_only_if_no_atmos': app.config.get('NOTIFY_ATMOS_ONLY_IF_NO_ATMOS', True),
+            'notify_atmos_with_dv_upgrade': app.config.get('NOTIFY_ATMOS_WITH_DV_UPGRADE', True),
+            'notify_resolution': app.config.get('NOTIFY_RESOLUTION', False),
+            'notify_resolution_only_upgrades': app.config.get('NOTIFY_RESOLUTION_ONLY_UPGRADES', True),
+            'notify_only_library_movies': app.config.get('NOTIFY_ONLY_LIBRARY_MOVIES', True),
+            'notify_expire_hours': app.config.get('NOTIFY_EXPIRE_HOURS', 24),
+            # Download notifications
+            'notify_download_start': app.config.get('NOTIFY_DOWNLOAD_START', True),
+            'notify_download_complete': app.config.get('NOTIFY_DOWNLOAD_COMPLETE', True),
+            'notify_download_error': app.config.get('NOTIFY_DOWNLOAD_ERROR', True)
         }
         
         # Save the last scan time if available
@@ -1034,6 +1151,70 @@ def save_settings():
     except Exception as e:
         log.error(f"Error saving settings: {e}")
         return False
+
+# Initialize integration clients
+def init_integration_clients():
+    """Initialize qBittorrent, Radarr, and download manager clients"""
+    global qbt_client, radarr_client, telegram_download_handler, upgrade_detector, download_manager
+
+    try:
+        # Initialize qBittorrent client
+        qbt_client = QBittorrentClient(
+            host=app.config.get('QBITTORRENT_HOST', '10.0.0.63'),
+            port=app.config.get('QBITTORRENT_PORT', 8080),
+            username=app.config.get('QBITTORRENT_USERNAME', ''),
+            password=app.config.get('QBITTORRENT_PASSWORD', '')
+        )
+        log.info("qBittorrent client initialized")
+
+        # Initialize Radarr client
+        radarr_client = RadarrClient(
+            base_url=app.config.get('RADARR_URL', ''),
+            api_key=app.config.get('RADARR_API_KEY', '')
+        )
+        log.info("Radarr client initialized")
+
+        # Initialize Telegram download handler
+        telegram_download_handler = TelegramDownloadHandler(
+            bot_token=app.config.get('TELEGRAM_TOKEN', ''),
+            chat_id=app.config.get('TELEGRAM_CHAT_ID', '')
+        )
+        log.info("Telegram download handler initialized")
+
+        # Initialize upgrade detector with notification config
+        upgrade_detector = UpgradeDetector(
+            notification_config={
+                'notify_fel': app.config.get('NOTIFY_FEL', True),
+                'notify_fel_from_p5': app.config.get('NOTIFY_FEL_FROM_P5', True),
+                'notify_fel_from_hdr': app.config.get('NOTIFY_FEL_FROM_HDR', True),
+                'notify_fel_duplicates': app.config.get('NOTIFY_FEL_DUPLICATES', False),
+                'notify_dv': app.config.get('NOTIFY_DV', False),
+                'notify_dv_from_hdr': app.config.get('NOTIFY_DV_FROM_HDR', True),
+                'notify_dv_profile_upgrades': app.config.get('NOTIFY_DV_PROFILE_UPGRADES', True),
+                'notify_atmos': app.config.get('NOTIFY_ATMOS', False),
+                'notify_atmos_only_if_no_atmos': app.config.get('NOTIFY_ATMOS_ONLY_IF_NO_ATMOS', True),
+                'notify_atmos_with_dv_upgrade': app.config.get('NOTIFY_ATMOS_WITH_DV_UPGRADE', True),
+                'notify_resolution': app.config.get('NOTIFY_RESOLUTION', False),
+                'notify_resolution_only_upgrades': app.config.get('NOTIFY_RESOLUTION_ONLY_UPGRADES', True),
+            }
+        )
+        log.info("Upgrade detector initialized")
+
+        # Initialize download manager
+        if state.scanner_obj and state.scanner_obj.db:
+            download_manager = DownloadManager(
+                qbt_client=qbt_client,
+                radarr_client=radarr_client,
+                telegram_handler=telegram_download_handler,
+                upgrade_detector=upgrade_detector,
+                scanner_db=state.scanner_obj.db
+            )
+            log.info("Download manager initialized")
+        else:
+            log.warning("Scanner DB not available yet, download manager will be initialized later")
+
+    except Exception as e:
+        log.error(f"Error initializing integration clients: {e}")
 
 # Check Plex connection
 def check_plex_connection():
@@ -1814,6 +1995,56 @@ def api_connections():
     return jsonify(status)
 
 
+@app.route('/api/movies', methods=['GET'])
+def list_movies_metadata():
+    if not metadata_service.is_configured():
+        return jsonify({
+            'success': False,
+            'error': 'Plex connection is not configured.',
+            'configured': False
+        }), 400
+
+    refresh = _truthy_param(request.args.get('refresh'))
+    movies = metadata_service.list_movies(force_refresh=refresh)
+    return jsonify({
+        'success': True,
+        'configured': True,
+        'movies': movies,
+        'requestedRefresh': refresh,
+        'summaryRefreshedAt': metadata_service.summary_refreshed_at(),
+        'count': len(movies),
+        'ffprobePath': metadata_service.ffprobe_path
+    })
+
+
+@app.route('/api/movies/<rating_key>', methods=['GET'])
+def get_movie_metadata(rating_key: str):
+    if not metadata_service.is_configured():
+        return jsonify({
+            'success': False,
+            'error': 'Plex connection is not configured.',
+            'configured': False
+        }), 400
+
+    refresh = _truthy_param(request.args.get('refresh'))
+    movie = metadata_service.get_movie(rating_key, refresh=refresh)
+    if not movie:
+        return jsonify({
+            'success': False,
+            'error': f'No metadata available for ratingKey {rating_key}',
+            'configured': True,
+            'requestedRefresh': refresh
+        }), 404
+
+    return jsonify({
+        'success': True,
+        'configured': True,
+        'movie': movie,
+        'requestedRefresh': refresh,
+        'ffprobePath': metadata_service.ffprobe_path
+    })
+
+
 @app.route('/api/metrics')
 def api_metrics():
     return jsonify(_compute_dolby_metrics())
@@ -2149,6 +2380,7 @@ def get_settings():
         'plex_url': app.config['PLEX_URL'],
         'plex_token': app.config['PLEX_TOKEN'],
         'library_name': app.config['LIBRARY_NAME'],
+        'ffprobe_path': app.config['FFPROBE_PATH'],
         'collection_name_all_dv': app.config['COLLECTION_NAME_ALL_DV'],
         'collection_name_profile7': app.config['COLLECTION_NAME_PROFILE7'],
         'collection_name_truehd_atmos': app.config['COLLECTION_NAME_TRUEHD_ATMOS'],
@@ -2197,6 +2429,9 @@ def save_settings_api():
 
         if 'library_name' in settings and settings['library_name']:
             app.config['LIBRARY_NAME'] = settings['library_name']
+
+        if 'ffprobe_path' in settings and settings['ffprobe_path']:
+            app.config['FFPROBE_PATH'] = settings['ffprobe_path']
             
         if 'collection_name_all_dv' in settings and settings['collection_name_all_dv']:
             app.config['COLLECTION_NAME_ALL_DV'] = settings['collection_name_all_dv']
@@ -2284,6 +2519,13 @@ def save_settings_api():
                 app.logger.info("IPT credentials saved to config")
             except Exception as e:
                 app.logger.error(f"Failed to save IPT credentials: {e}")
+
+        metadata_service.update_config(
+            app.config.get('PLEX_URL') or None,
+            app.config.get('PLEX_TOKEN') or None,
+            app.config.get('LIBRARY_NAME') or None,
+            app.config.get('FFPROBE_PATH')
+        )
 
         save_settings()
         check_plex_connection()
