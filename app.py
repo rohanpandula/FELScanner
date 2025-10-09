@@ -2377,27 +2377,9 @@ def iptscanner_page():
         action = form.get('action', 'save').lower()
 
         if action == 'test-login':
-            base_url_input = form.get('prowlarr_url', '').strip()
-            api_key_input = form.get('prowlarr_api_key', '').strip()
-            indexer_input = form.get('prowlarr_indexer_id', '').strip()
-
-            base_url = base_url_input or prowlarr_cfg.get('baseUrl', '')
-            api_key = api_key_input or prowlarr_cfg.get('apiKey', '')
-            try:
-                indexer_id = int(indexer_input) if indexer_input else int(prowlarr_cfg.get('indexerId', 0) or 0)
-            except ValueError:
-                flash('Indexer ID must be a number.', 'error')
-                return redirect(url_for('iptscanner_page'))
-
-            success, message = _perform_ipt_login_test(base_url, api_key, indexer_id)
+            # Legacy form fields are ignored; defer to the shared IPT login tester.
+            success, message = _perform_ipt_login_test(config)
             flash(message, 'success' if success else 'error')
-
-            if base_url_input:
-                prowlarr_cfg['baseUrl'] = base_url_input
-            if api_key_input:
-                prowlarr_cfg['apiKey'] = api_key_input
-            if indexer_input:
-                prowlarr_cfg['indexerId'] = indexer_id
 
             _save_ipt_config(config)
             if success:
