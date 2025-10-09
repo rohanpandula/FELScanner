@@ -2,125 +2,452 @@
 {% block title %}Settings · FELScanner{% endblock %}
 
 {% block content %}
-<section>
-    <h2>Application Settings</h2>
-    <form method="post" action="{{ url_for('settings_page') }}">
+<div class="settings-container">
+    <h2>Settings</h2>
+
+    <!-- Tab Navigation -->
+    <div class="tabs">
+        <button class="tab-button active" data-tab="connections">🔌 Connections</button>
+        <button class="tab-button" data-tab="notifications">🔔 Notifications</button>
+        <button class="tab-button" data-tab="downloads">📥 Downloads</button>
+        <button class="tab-button" data-tab="advanced">⚙️ Advanced</button>
+    </div>
+
+    <!-- Connections Tab -->
+    <div id="connections-tab" class="tab-content active">
+        <h3>Connection Settings</h3>
+
+        <!-- Plex -->
         <fieldset>
-            <legend>Plex connection</legend>
+            <legend>Plex Server</legend>
             <div class="field-group">
                 <label for="plex-url">Plex URL</label>
-                <input id="plex-url" type="text" name="plex_url" value="{{ settings.plex_url }}">
+                <input id="plex-url" type="text" placeholder="http://192.168.1.100:32400">
+                <small>Your Plex server URL</small>
             </div>
             <div class="field-group">
-                <label for="plex-token">Plex token</label>
-                <input id="plex-token" type="text" name="plex_token" value="{{ settings.plex_token }}">
+                <label for="plex-token">Plex Token</label>
+                <input id="plex-token" type="password" placeholder="Enter Plex token">
+                <small>Get from Plex settings → Network</small>
             </div>
             <div class="field-group">
-                <label for="library-name">Library name</label>
-                <input id="library-name" type="text" name="library_name" value="{{ settings.library_name }}">
+                <label for="library-name">Library Name</label>
+                <input id="library-name" type="text" placeholder="Movies">
+                <small>Name of your Plex movie library</small>
             </div>
-            <button class="btn btn-secondary" type="submit" name="action" value="test-plex">Test Plex connection</button>
+            <button class="btn btn-secondary test-btn" data-service="plex">Test Connection</button>
+            <span class="status-indicator" id="plex-status"></span>
         </fieldset>
+
+        <!-- Telegram -->
+        <fieldset>
+            <legend>Telegram Notifications</legend>
+            <div class="checkbox-row">
+                <input type="checkbox" id="telegram-enabled">
+                <label for="telegram-enabled">Enable Telegram Notifications</label>
+            </div>
+            <div class="field-group">
+                <label for="telegram-token">Bot Token</label>
+                <input id="telegram-token" type="password" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11">
+                <small>Create a bot via @BotFather on Telegram</small>
+            </div>
+            <div class="field-group">
+                <label for="telegram-chat-id">Chat ID</label>
+                <input id="telegram-chat-id" type="text" placeholder="123456789">
+                <small>Your Telegram chat ID</small>
+            </div>
+            <button class="btn btn-secondary test-btn" data-service="telegram">Test Connection</button>
+            <span class="status-indicator" id="telegram-status"></span>
+        </fieldset>
+
+        <!-- Radarr -->
+        <fieldset>
+            <legend>Radarr</legend>
+            <div class="field-group">
+                <label for="radarr-url">Radarr URL</label>
+                <input id="radarr-url" type="text" placeholder="http://10.0.0.63:7878">
+                <small>Your Radarr server URL</small>
+            </div>
+            <div class="field-group">
+                <label for="radarr-api-key">API Key</label>
+                <input id="radarr-api-key" type="password" placeholder="Enter Radarr API key">
+                <small>Find in Radarr Settings → General → API Key</small>
+            </div>
+            <div class="field-group">
+                <label for="radarr-root-path">Root Folder Path</label>
+                <input id="radarr-root-path" type="text" placeholder="/mnt/user/Media/Movies/">
+                <small>Where Radarr stores movies (must match qBittorrent path)</small>
+            </div>
+            <button class="btn btn-secondary test-btn" data-service="radarr">Test Connection</button>
+            <span class="status-indicator" id="radarr-status"></span>
+        </fieldset>
+
+        <!-- qBittorrent -->
+        <fieldset>
+            <legend>qBittorrent</legend>
+            <div class="field-group">
+                <label for="qbt-host">Host</label>
+                <input id="qbt-host" type="text" placeholder="10.0.0.63">
+                <small>qBittorrent server hostname or IP</small>
+            </div>
+            <div class="field-group">
+                <label for="qbt-port">Port</label>
+                <input id="qbt-port" type="number" placeholder="8080">
+                <small>Web UI port (default: 8080)</small>
+            </div>
+            <div class="field-group">
+                <label for="qbt-username">Username (optional)</label>
+                <input id="qbt-username" type="text" placeholder="admin">
+                <small>Leave blank if no authentication</small>
+            </div>
+            <div class="field-group">
+                <label for="qbt-password">Password (optional)</label>
+                <input id="qbt-password" type="password" placeholder="">
+                <small>Leave blank if no authentication</small>
+            </div>
+            <button class="btn btn-secondary test-btn" data-service="qbittorrent">Test Connection</button>
+            <span class="status-indicator" id="qbittorrent-status"></span>
+        </fieldset>
+
+        <button class="btn btn-primary save-btn" data-tab="connections">Save Connection Settings</button>
+    </div>
+
+    <!-- Notifications Tab -->
+    <div id="notifications-tab" class="tab-content">
+        <h3>Notification Rules</h3>
+        <p class="info-text">Configure when to send Telegram approval requests for new torrents</p>
+
+        <fieldset>
+            <legend>Profile 7 FEL Notifications</legend>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-fel">
+                <label for="notify-fel">Enable FEL notifications</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-fel-from-p5">
+                <label for="notify-fel-from-p5">Notify when upgrading from Profile 5 to Profile 7 FEL</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-fel-from-hdr">
+                <label for="notify-fel-from-hdr">Notify when upgrading from HDR10 to Profile 7 FEL</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-fel-duplicates">
+                <label for="notify-fel-duplicates">Notify for duplicate FEL releases (different groups)</label>
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <legend>Dolby Vision Notifications</legend>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-dv">
+                <label for="notify-dv">Enable general DV notifications</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-dv-from-hdr">
+                <label for="notify-dv-from-hdr">Notify when upgrading from HDR10 to any DV</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-dv-profile-upgrades">
+                <label for="notify-dv-profile-upgrades">Notify on DV profile upgrades (P5→P8, etc.)</label>
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <legend>Atmos Notifications</legend>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-atmos">
+                <label for="notify-atmos">Enable Atmos notifications</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-atmos-only-if-no-atmos">
+                <label for="notify-atmos-only-if-no-atmos">Only notify if current version has no Atmos</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-atmos-with-dv-upgrade">
+                <label for="notify-atmos-with-dv-upgrade">Notify when Atmos comes with DV upgrade</label>
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <legend>Resolution & Other</legend>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-resolution">
+                <label for="notify-resolution">Enable resolution notifications</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-resolution-only-upgrades">
+                <label for="notify-resolution-only-upgrades">Only notify on resolution upgrades (1080p→2160p)</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-only-library-movies">
+                <label for="notify-only-library-movies">Only notify for movies already in Plex library</label>
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <legend>Download Notifications</legend>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-download-start">
+                <label for="notify-download-start">Notify when download starts</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-download-complete">
+                <label for="notify-download-complete">Notify when download completes</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="notify-download-error">
+                <label for="notify-download-error">Notify on download errors</label>
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <legend>Timing</legend>
+            <div class="field-group">
+                <label for="notify-expire-hours">Approval request expiry (hours)</label>
+                <input id="notify-expire-hours" type="number" min="1" max="168" placeholder="24">
+                <small>Pending approvals will auto-expire after this time</small>
+            </div>
+        </fieldset>
+
+        <button class="btn btn-primary save-btn" data-tab="notifications">Save Notification Settings</button>
+    </div>
+
+    <!-- Downloads Tab -->
+    <div id="downloads-tab" class="tab-content">
+        <h3>Download Settings</h3>
+
+        <fieldset>
+            <legend>qBittorrent Behavior</legend>
+            <div class="field-group">
+                <label for="qbt-category">Category</label>
+                <input id="qbt-category" type="text" placeholder="movies-fel">
+                <small>qBittorrent category for downloads</small>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="qbt-pause-on-add">
+                <label for="qbt-pause-on-add">Pause torrents on add</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="qbt-sequential">
+                <label for="qbt-sequential">Enable sequential download</label>
+            </div>
+        </fieldset>
+
+        <button class="btn btn-primary save-btn" data-tab="downloads">Save Download Settings</button>
+    </div>
+
+    <!-- Advanced Tab -->
+    <div id="advanced-tab" class="tab-content">
+        <h3>Advanced Settings</h3>
 
         <fieldset>
             <legend>Collections</legend>
             <div class="checkbox-row">
-                <input type="checkbox" id="collection-enable-dv" name="collection_enable_dv" {% if settings.collection_enable_dv %}checked{% endif %}>
+                <input type="checkbox" id="collection-enable-dv">
                 <label for="collection-enable-dv">Enable Dolby Vision collection</label>
             </div>
             <div class="field-group">
                 <label for="collection-dv">Dolby Vision collection name</label>
-                <input id="collection-dv" type="text" name="collection_name_all_dv" value="{{ settings.collection_name_all_dv }}">
+                <input id="collection-dv" type="text" placeholder="All Dolby Vision">
             </div>
 
             <div class="checkbox-row">
-                <input type="checkbox" id="collection-enable-p7" name="collection_enable_p7" {% if settings.collection_enable_p7 %}checked{% endif %}>
+                <input type="checkbox" id="collection-enable-p7">
                 <label for="collection-enable-p7">Enable Profile 7 FEL collection</label>
             </div>
             <div class="field-group">
                 <label for="collection-p7">Profile 7 FEL collection name</label>
-                <input id="collection-p7" type="text" name="collection_name_profile7" value="{{ settings.collection_name_profile7 }}">
+                <input id="collection-p7" type="text" placeholder="DV FEL Profile 7">
             </div>
 
             <div class="checkbox-row">
-                <input type="checkbox" id="collection-enable-atmos" name="collection_enable_atmos" {% if settings.collection_enable_atmos %}checked{% endif %}>
+                <input type="checkbox" id="collection-enable-atmos">
                 <label for="collection-enable-atmos">Enable TrueHD Atmos collection</label>
             </div>
             <div class="field-group">
                 <label for="collection-atmos">TrueHD Atmos collection name</label>
-                <input id="collection-atmos" type="text" name="collection_name_truehd_atmos" value="{{ settings.collection_name_truehd_atmos }}">
+                <input id="collection-atmos" type="text" placeholder="TrueHD Atmos">
             </div>
         </fieldset>
 
         <fieldset>
-            <legend>Automation &amp; reports</legend>
+            <legend>Scanning & Automation</legend>
             <div class="field-group">
                 <label for="scan-frequency">Scan frequency (hours)</label>
-                <input id="scan-frequency" type="number" min="1" name="scan_frequency" value="{{ settings.scan_frequency }}">
+                <input id="scan-frequency" type="number" min="1" placeholder="24">
             </div>
             <div class="field-group">
-                <label for="auto-start">Auto start behaviour</label>
-                <select id="auto-start" name="auto_start">
-                    {% for option in ['none', 'scan', 'verify', 'monitor'] %}
-                        <option value="{{ option }}" {% if settings.auto_start == option %}selected{% endif %}>{{ option|capitalize }}</option>
-                    {% endfor %}
+                <label for="auto-start">Auto start behavior</label>
+                <select id="auto-start">
+                    <option value="none">None</option>
+                    <option value="scan">Scan</option>
+                    <option value="verify">Verify</option>
+                    <option value="monitor">Monitor</option>
                 </select>
             </div>
             <div class="field-group">
                 <label for="max-reports-size">Keep last N reports</label>
-                <input id="max-reports-size" type="number" min="1" name="max_reports_size" value="{{ settings.max_reports_size }}">
-            </div>
-            <div class="checkbox-row">
-                <input type="checkbox" id="use-whole-numbers" name="use_whole_numbers" {% if settings.use_whole_numbers %}checked{% endif %}>
-                <label for="use-whole-numbers">Display counts as whole numbers</label>
+                <input id="max-reports-size" type="number" min="1" placeholder="5">
             </div>
         </fieldset>
 
-        <fieldset>
-            <legend>Telegram notifications</legend>
-            <div class="checkbox-row">
-                <input type="checkbox" id="telegram-enabled" name="telegram_enabled" {% if settings.telegram_enabled %}checked{% endif %}>
-                <label for="telegram-enabled">Enable Telegram notifications</label>
-            </div>
-            <div class="field-group">
-                <label for="telegram-token">Bot token</label>
-                <input id="telegram-token" type="text" name="telegram_token" value="{{ settings.telegram_token }}">
-            </div>
-            <div class="field-group">
-                <label for="telegram-chat-id">Chat ID</label>
-                <input id="telegram-chat-id" type="text" name="telegram_chat_id" value="{{ settings.telegram_chat_id }}">
-            </div>
-            <div class="checkbox-row">
-                <input type="checkbox" id="notify-all" name="telegram_notify_all_updates" {% if settings.telegram_notify_all_updates %}checked{% endif %}>
-                <label for="notify-all">Notify on all updates</label>
-            </div>
-            <div class="checkbox-row">
-                <input type="checkbox" id="notify-new" name="telegram_notify_new_movies" {% if settings.telegram_notify_new_movies %}checked{% endif %}>
-                <label for="notify-new">Notify on new movies</label>
-            </div>
-            <div class="checkbox-row">
-                <input type="checkbox" id="notify-dv" name="telegram_notify_dv" {% if settings.telegram_notify_dv %}checked{% endif %}>
-                <label for="notify-dv">Notify on Dolby Vision matches</label>
-            </div>
-            <div class="checkbox-row">
-                <input type="checkbox" id="notify-p7" name="telegram_notify_p7" {% if settings.telegram_notify_p7 %}checked{% endif %}>
-                <label for="notify-p7">Notify on Profile 7 matches</label>
-            </div>
-            <div class="checkbox-row">
-                <input type="checkbox" id="notify-atmos" name="telegram_notify_atmos" {% if settings.telegram_notify_atmos %}checked{% endif %}>
-                <label for="notify-atmos">Notify on Atmos matches</label>
-            </div>
-        </fieldset>
+        <button class="btn btn-primary save-btn" data-tab="advanced">Save Advanced Settings</button>
+    </div>
+</div>
 
-        <fieldset>
-            <legend>General</legend>
-            <div class="checkbox-row">
-                <input type="checkbox" id="setup-completed" name="setup_completed" {% if settings.setup_completed %}checked{% endif %}>
-                <label for="setup-completed">Mark initial setup as completed</label>
-            </div>
-        </fieldset>
+<style>
+.settings-container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 20px;
+}
 
-        <button class="btn" type="submit" name="action" value="save">Save settings</button>
-    </form>
-</section>
+.tabs {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+    border-bottom: 2px solid #eee;
+}
+
+.tab-button {
+    padding: 12px 24px;
+    background: none;
+    border: none;
+    border-bottom: 3px solid transparent;
+    cursor: pointer;
+    font-size: 16px;
+    transition: all 0.3s;
+}
+
+.tab-button:hover {
+    background: #f5f5f5;
+}
+
+.tab-button.active {
+    border-bottom-color: #4CAF50;
+    font-weight: bold;
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+    animation: fadeIn 0.3s;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+fieldset {
+    margin: 20px 0;
+    padding: 20px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+}
+
+legend {
+    font-weight: bold;
+    padding: 0 10px;
+}
+
+.field-group {
+    margin: 15px 0;
+}
+
+.field-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 500;
+}
+
+.field-group input,
+.field-group select {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.field-group small {
+    display: block;
+    margin-top: 5px;
+    color: #666;
+    font-size: 12px;
+}
+
+.checkbox-row {
+    margin: 10px 0;
+    display: flex;
+    align-items: center;
+}
+
+.checkbox-row input[type="checkbox"] {
+    margin-right: 10px;
+}
+
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.3s;
+}
+
+.btn-primary {
+    background: #4CAF50;
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #45a049;
+}
+
+.btn-secondary {
+    background: #008CBA;
+    color: white;
+}
+
+.btn-secondary:hover {
+    background: #007399;
+}
+
+.test-btn {
+    margin-right: 10px;
+}
+
+.save-btn {
+    margin-top: 20px;
+}
+
+.status-indicator {
+    display: inline-block;
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.status-indicator.success {
+    background: #d4edda;
+    color: #155724;
+}
+
+.status-indicator.error {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.info-text {
+    color: #666;
+    margin-bottom: 20px;
+}
+</style>
+
+<script src="{{ url_for('static', filename='js/settings.js') }}"></script>
 {% endblock %}
