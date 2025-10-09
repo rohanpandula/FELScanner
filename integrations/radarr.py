@@ -6,6 +6,7 @@ Used to find where movies are stored for parallel version downloads.
 """
 
 import logging
+import asyncio
 import aiohttp
 from typing import Dict, List, Optional, Any
 from urllib.parse import urljoin
@@ -32,7 +33,23 @@ class RadarrClient:
 
     async def _ensure_session(self):
         """Ensure HTTP session exists with API key header"""
+        # Check if session exists, is open, and is in the current event loop
+        need_new_session = False
+
         if not self.session or self.session.closed:
+            need_new_session = True
+        else:
+            # Check if the session's loop matches the current loop
+            try:
+                current_loop = asyncio.get_running_loop()
+                # If we can't access the session's loop or it's different, recreate
+                if self.session._loop != current_loop:
+                    await self.session.close()
+                    need_new_session = True
+            except:
+                need_new_session = True
+
+        if need_new_session:
             headers = {
                 "X-Api-Key": self.api_key,
                 "Content-Type": "application/json",

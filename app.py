@@ -1423,6 +1423,15 @@ def run_async_job(async_func):
     finally:
         loop.close()
 
+def run_async(coro):
+    """Run an async coroutine in a new event loop (for Flask routes)"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
 # Initialize periodic connection checks
 def init_connection_checks():
     """Start background scheduler for periodic connection checks."""
@@ -2953,7 +2962,7 @@ def run_ipt_scanner(config=None):
                         }
 
                         # Process the torrent discovery
-                        result = asyncio.run(download_manager.process_ipt_discovery(torrent_data))
+                        result = run_async(download_manager.process_ipt_discovery(torrent_data))
 
                         if result.get('status') == 'notification_sent':
                             app.logger.info(f"Sent approval request for: {torrent.get('title')}")
@@ -3387,12 +3396,12 @@ def telegram_webhook():
             if not telegram_download_handler:
                 return jsonify({'ok': False, 'error': 'Telegram handler not initialized'}), 500
 
-            result = asyncio.run(telegram_download_handler.handle_callback(
+            result = run_async(telegram_download_handler.handle_callback(
                 callback_data, message_id, chat_id
             ))
 
             # Answer the callback query to stop loading animation
-            asyncio.run(telegram_download_handler._answer_callback_query(
+            run_async(telegram_download_handler._answer_callback_query(
                 callback_query_id,
                 "Processing..." if result.get('success') else "Error"
             ))
@@ -3452,7 +3461,7 @@ def approve_download():
             return jsonify({'success': False, 'error': 'Download manager not initialized'}), 500
 
         # Execute the download
-        result = asyncio.run(download_manager.execute_download(request_id, 'approved'))
+        result = run_async(download_manager.execute_download(request_id, 'approved'))
 
         return jsonify(result)
     except Exception as e:
@@ -3487,11 +3496,16 @@ def get_active_downloads():
         if not qbt_client:
             return jsonify([])
 
-        # get_torrents() returns a list directly, not a dict
-        torrents = asyncio.run(qbt_client.get_torrents(
-            category=app.config.get('QBITTORRENT_CATEGORY', 'movies-fel')
-        ))
+        async def _get_torrents():
+            try:
+                torrents = await qbt_client.get_torrents(
+                    category=app.config.get('QBITTORRENT_CATEGORY', 'movies-fel')
+                )
+                return torrents
+            finally:
+                await qbt_client.close()
 
+        torrents = run_async(_get_torrents())
         return jsonify(torrents)
     except Exception as e:
         app.logger.error(f"Error getting active downloads: {str(e)}")
@@ -3539,7 +3553,14 @@ def test_qbittorrent_connection():
         if not qbt_client:
             return jsonify({'success': False, 'error': 'qBittorrent client not initialized'}), 500
 
-        result = asyncio.run(qbt_client.test_connection())
+        async def _test():
+            try:
+                result = await qbt_client.test_connection()
+                return result
+            finally:
+                await qbt_client.close()
+
+        result = run_async(_test())
         return jsonify(result)
     except Exception as e:
         app.logger.error(f"Error testing qBittorrent connection: {str(e)}")
@@ -3580,7 +3601,14 @@ def test_radarr_connection():
         if not radarr_client:
             return jsonify({'success': False, 'error': 'Radarr client not initialized'}), 500
 
-        result = asyncio.run(radarr_client.test_connection())
+        async def _test():
+            try:
+                result = await radarr_client.test_connection()
+                return result
+            finally:
+                await radarr_client.close()
+
+        result = run_async(_test())
         return jsonify(result)
     except Exception as e:
         app.logger.error(f"Error testing Radarr connection: {str(e)}")
