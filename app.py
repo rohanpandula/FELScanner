@@ -9,6 +9,8 @@ import requests
 import pytz
 import shutil
 from datetime import datetime, timedelta
+import sqlite3
+from statistics import mean
 from flask_compress import Compress
 from plexapi.server import PlexServer
 from scanner import PlexDVScanner
@@ -462,6 +464,202 @@ def _format_human_datetime(value: Optional[datetime]) -> str:
     if delta <= timedelta(days=7):
         return local_value.strftime('%a %-I:%M %p')
     return local_value.strftime('%Y-%m-%d %-I:%M %p')
+
+
+def _parse_size_to_gb(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        # Assume bytes if the number is very large
+        return float(value) / (1024 ** 3) if value > 10_000 else float(value)
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    try:
+        if text.endswith('gb'):
+            return float(text[:-2].strip())
+        if text.endswith('mb'):
+            return float(text[:-2].strip()) / 1024
+        if text.endswith('kb'):
+            return float(text[:-2].strip()) / (1024 ** 2)
+        if text.endswith('bytes'):
+            return float(text[:-5].strip()) / (1024 ** 3)
+        return float(text)
+    except Exception:
+        return None
+
+
+def _parse_bitrate_to_mbps(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        # Assume value is in kbps if it's very large
+        return float(value) / 1000 if value > 100 else float(value)
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    try:
+        if text.endswith('mbps'):
+            return float(text[:-4].strip())
+        if text.endswith('kbps'):
+            return float(text[:-4].strip()) / 1000
+        if text.endswith('bps'):
+            return float(text[:-3].strip()) / 1_000_000
+        return float(text)
+    except Exception:
+        return None
+
+
+def _compute_dolby_metrics() -> dict:
+    metrics = {
+        'totals': {
+            'library': 0,
+            'dv': 0,
+            'fel': 0,
+            'atmos': 0
+        },
+        'ratios': {
+            'dv_percent': 0.0,
+            'atmos_percent': 0.0,
+            'fel_percent': 0.0,
+            'dv_and_atmos': 0,
+            'fel_and_atmos': 0
+        },
+        'dv_profiles': [],
+        'year_breakdown': [],
+        'quality': {
+            'avg_file_size_gb': 0.0,
+            'avg_bitrate_mbps': 0.0
+        },
+        'recent': []
+    }
+
+    db_path = os.path.join(app.config['REPORTS_FOLDER_PATH'], 'movie_database.db')
+    if not os.path.exists(db_path):
+        return metrics
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        totals = cur.execute('SELECT COUNT(*) AS cnt FROM movies').fetchone()
+        metrics['totals']['library'] = totals['cnt'] if totals else 0
+
+        dv_total = cur.execute(
+            "SELECT COUNT(*) AS cnt FROM movies WHERE dv_profile IS NOT NULL AND dv_profile != 'None'"
+        ).fetchone()
+        metrics['totals']['dv'] = dv_total['cnt'] if dv_total else 0
+
+        fel_total = cur.execute(
+            "SELECT COUNT(*) AS cnt FROM movies WHERE dv_fel = 1"
+        ).fetchone()
+        metrics['totals']['fel'] = fel_total['cnt'] if fel_total else 0
+
+        atmos_total = cur.execute(
+            "SELECT COUNT(*) AS cnt FROM movies WHERE has_atmos = 1"
+        ).fetchone()
+        metrics['totals']['atmos'] = atmos_total['cnt'] if atmos_total else 0
+
+        overlap = cur.execute(
+            "SELECT "
+            "SUM(CASE WHEN dv_profile IS NOT NULL AND dv_profile != 'None' AND has_atmos = 1 THEN 1 ELSE 0 END) AS dv_atmos, "
+            "SUM(CASE WHEN dv_fel = 1 AND has_atmos = 1 THEN 1 ELSE 0 END) AS fel_atmos "
+            "FROM movies"
+        ).fetchone()
+        if overlap:
+            metrics['ratios']['dv_and_atmos'] = overlap['dv_atmos'] or 0
+            metrics['ratios']['fel_and_atmos'] = overlap['fel_atmos'] or 0
+
+        if metrics['totals']['library']:
+            metrics['ratios']['dv_percent'] = round(
+                (metrics['totals']['dv'] / metrics['totals']['library']) * 100, 2
+            )
+            metrics['ratios']['atmos_percent'] = round(
+                (metrics['totals']['atmos'] / metrics['totals']['library']) * 100, 2
+            )
+            metrics['ratios']['fel_percent'] = round(
+                (metrics['totals']['fel'] / metrics['totals']['library']) * 100, 2
+            )
+
+        profile_rows = cur.execute(
+            "SELECT dv_profile AS profile, COUNT(*) AS cnt "
+            "FROM movies WHERE dv_profile IS NOT NULL AND dv_profile != 'None' "
+            "GROUP BY dv_profile ORDER BY cnt DESC"
+        ).fetchall()
+        for row in profile_rows or []:
+            count = row['cnt'] or 0
+            percent = (count / metrics['totals']['dv'] * 100) if metrics['totals']['dv'] else 0
+            metrics['dv_profiles'].append({
+                'profile': str(row['profile']),
+                'count': count,
+                'percent': round(percent, 2)
+            })
+
+        year_counter = {}
+        dv_rows = cur.execute(
+            "SELECT extra_data FROM movies WHERE dv_profile IS NOT NULL AND dv_profile != 'None'"
+        ).fetchall()
+        for row in dv_rows or []:
+            if not row['extra_data']:
+                continue
+            try:
+                extra = json.loads(row['extra_data'])
+            except Exception:
+                continue
+            year = extra.get('year')
+            if year:
+                year_counter[year] = year_counter.get(year, 0) + 1
+        metrics['year_breakdown'] = [
+            {'label': str(year), 'count': count}
+            for year, count in sorted(year_counter.items(), key=lambda item: item[0], reverse=True)[:8]
+        ]
+
+        file_sizes = []
+        bitrates = []
+        recent_rows = cur.execute(
+            "SELECT title, dv_profile, dv_fel, has_atmos, last_updated, extra_data "
+            "FROM movies ORDER BY datetime(last_updated) DESC LIMIT 8"
+        ).fetchall()
+        for row in recent_rows or []:
+            extra = {}
+            if row['extra_data']:
+                try:
+                    extra = json.loads(row['extra_data'])
+                except Exception:
+                    extra = {}
+            file_size_gb = _parse_size_to_gb(extra.get('file_size'))
+            if file_size_gb:
+                file_sizes.append(file_size_gb)
+            bitrate = _parse_bitrate_to_mbps(extra.get('video_bitrate') or extra.get('video_bitrate_raw'))
+            if bitrate:
+                bitrates.append(bitrate)
+
+            metrics['recent'].append({
+                'title': row['title'],
+                'dv_profile': row['dv_profile'],
+                'dv_fel': bool(row['dv_fel']),
+                'has_atmos': bool(row['has_atmos']),
+                'updated_at': row['last_updated'],
+                'file_size': file_size_gb,
+                'bitrate': bitrate,
+                'audio': extra.get('audio_tracks')
+            })
+
+        if file_sizes:
+            metrics['quality']['avg_file_size_gb'] = round(mean(file_sizes), 2)
+        if bitrates:
+            metrics['quality']['avg_bitrate_mbps'] = round(mean(bitrates), 2)
+
+    except Exception as exc:
+        app.logger.error(f"Failed to compute Dolby metrics: {exc}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return metrics
 
 
 def _fetch_ipt_results(config: dict, limit: int = 50, force: bool = True) -> list[dict]:
@@ -1439,7 +1637,7 @@ def add_cache_headers(response):
 
 @app.route('/')
 def index():
-    return redirect(url_for('dashboard'))
+    return render_template('index.html', cache_buster=int(time.time()))
 
 @app.route('/api/status')
 def api_status():
@@ -1451,7 +1649,7 @@ def api_status():
             'removed_items': state.last_collection_changes.get('removed_items', [])
                 or state.last_collection_changes.get('removed', [])
         }
-        
+
         # Ensure we have a last_scan_time if it was previously set
         last_scan_time = state.last_scan_time
         if not last_scan_time and 'LAST_SCAN_RESULTS' in app.config:
@@ -1460,10 +1658,11 @@ def api_status():
                 last_scan_time = app.config.get('LAST_SCAN_TIME')
             except:
                 pass
-        
+
         response = {
             'status': {
                 'is_scanning': state.is_scanning,
+                'monitor_active': state.monitor_active,
                 'last_scan_time': last_scan_time,
                 'next_scan_time': state.next_scan_time
             },
@@ -1473,6 +1672,31 @@ def api_status():
         
     return jsonify(response)
 
+
+@app.route('/api/connections')
+def api_connections():
+    with state.lock:
+        status = state.connection_status.copy()
+    return jsonify(status)
+
+
+@app.route('/api/metrics')
+def api_metrics():
+    return jsonify(_compute_dolby_metrics())
+
+
+@app.route('/api/reports')
+def api_reports():
+    reports = _list_reports(limit=10)
+    payload = [
+        {
+            'filename': item['filename'],
+            'date': item['date'].isoformat(),
+            'display_size': item['display_size']
+        }
+        for item in reports
+    ]
+    return jsonify(payload)
 @app.route('/api/check-setup')
 def check_setup():
     # Log the current setup status for debugging
