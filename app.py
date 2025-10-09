@@ -94,15 +94,19 @@ class AppState:
         }
         self.last_collection_changes = {'added': [], 'removed': []}
         self.connection_status = {
-            'plex': {'status': 'unknown', 'message': 'Not connected'},
-            'telegram': {'status': 'unknown', 'message': 'Not connected'},
-            'server': {'status': 'connected', 'message': 'Web server running'},
-            'iptorrents': {'status': 'unknown', 'message': 'Not connected'}
+            'plex': {'status': 'unknown', 'message': 'Not connected', 'last_check': None, 'next_check': None},
+            'telegram': {'status': 'unknown', 'message': 'Not connected', 'last_check': None, 'next_check': None},
+            'iptorrents': {'status': 'unknown', 'message': 'Not connected', 'last_check': None, 'next_check': None}
         }
+        self.last_plex_check = None
+        self.last_telegram_check = None
         self.lock = threading.RLock()  # For thread-safe state updates
 
 # Create application state
 state = AppState()
+
+# Initialize scheduler for periodic connection checks
+scheduler = None
 
 
 def _human_readable_size(num_bytes: int) -> str:
@@ -294,11 +298,13 @@ def _save_ipt_config(config: dict) -> bool:
         return False
 
 
-def _set_iptorrents_status(status: str, message: str) -> None:
+def _set_iptorrents_status(status: str, message: str, last_check: str = None, next_check: str = None) -> None:
     with state.lock:
         state.connection_status['iptorrents'] = {
             'status': status,
-            'message': message
+            'message': message,
+            'last_check': last_check,
+            'next_check': next_check
         }
 
 
@@ -1031,24 +1037,33 @@ def save_settings():
 
 # Check Plex connection
 def check_plex_connection():
+    now = datetime.now()
+    next_check = now + timedelta(minutes=10)
+
     try:
         plex_url = _validate_and_normalize_plex_url(app.config['PLEX_URL'])
         plex = PlexServer(plex_url, app.config['PLEX_TOKEN'])
         movies_section = plex.library.section(app.config['LIBRARY_NAME'])
         movie_count = len(movies_section.all())
-        
+
         with state.lock:
             state.connection_status['plex'] = {
                 'status': 'connected',
-                'message': f'Connected (Found {movie_count} movies)'
+                'message': f'Connected • {movie_count} movies • Checked {now.strftime("%H:%M")}',
+                'last_check': now.isoformat(),
+                'next_check': next_check.isoformat()
             }
+            state.last_plex_check = now
         return True
     except ValueError as err:
         with state.lock:
             state.connection_status['plex'] = {
                 'status': 'disconnected',
-                'message': f'Error: {err}'
+                'message': f'Error: {err}',
+                'last_check': now.isoformat(),
+                'next_check': next_check.isoformat()
             }
+            state.last_plex_check = now
         return False
     except requests_exceptions.SSLError as err:
         hint = ("SSL certificate verification failed. If you're using a self-signed certificate or connecting by "
@@ -1056,19 +1071,28 @@ def check_plex_connection():
         with state.lock:
             state.connection_status['plex'] = {
                 'status': 'disconnected',
-                'message': f'Error: {hint} ({err})'
+                'message': f'Error: {hint}',
+                'last_check': now.isoformat(),
+                'next_check': next_check.isoformat()
             }
+            state.last_plex_check = now
         return False
     except Exception as e:
         with state.lock:
             state.connection_status['plex'] = {
                 'status': 'disconnected',
-                'message': f'Error: {str(e)}'
+                'message': f'Error: {str(e)}',
+                'last_check': now.isoformat(),
+                'next_check': next_check.isoformat()
             }
+            state.last_plex_check = now
         return False
 
 # Check Telegram connection
 def check_telegram_connection():
+    now = datetime.now()
+    next_check = now + timedelta(hours=1)
+
     if not app.config['TELEGRAM_ENABLED']:
         with state.lock:
             state.connection_status['telegram'] = {
@@ -1076,34 +1100,89 @@ def check_telegram_connection():
                 'message': 'Notifications disabled'
             }
         return False
-        
+
     try:
         api_url = f"https://api.telegram.org/bot{app.config['TELEGRAM_TOKEN']}/getMe"
         response = requests.get(api_url, timeout=10)
         data = response.json()
-        
+
         if data['ok']:
             bot_name = data['result']['username']
             with state.lock:
                 state.connection_status['telegram'] = {
                     'status': 'connected',
-                    'message': f'Connected (@{bot_name})'
+                    'message': f'Connected @{bot_name} • Checked {now.strftime("%H:%M")}',
+                    'last_check': now.isoformat(),
+                    'next_check': next_check.isoformat()
                 }
+                state.last_telegram_check = now
             return True
         else:
             with state.lock:
                 state.connection_status['telegram'] = {
                     'status': 'disconnected',
-                    'message': 'Invalid bot token'
+                    'message': 'Invalid bot token',
+                    'last_check': now.isoformat(),
+                    'next_check': next_check.isoformat()
                 }
+                state.last_telegram_check = now
             return False
     except Exception as e:
         with state.lock:
             state.connection_status['telegram'] = {
                 'status': 'disconnected',
-                'message': f'Error: {str(e)}'
+                'message': f'Error: {str(e)}',
+                'last_check': now.isoformat(),
+                'next_check': next_check.isoformat()
             }
+            state.last_telegram_check = now
         return False
+
+# Initialize periodic connection checks
+def init_connection_checks():
+    """Start background scheduler for periodic connection checks."""
+    global scheduler
+
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        import pytz
+
+        # Initialize scheduler if not already done
+        if scheduler is None:
+            scheduler = BackgroundScheduler(
+                daemon=True,
+                job_defaults={'misfire_grace_time': 600},
+                timezone=pytz.utc
+            )
+            scheduler.start()
+            app.logger.info("Connection check scheduler started")
+
+        # Add Plex check job (every 10 minutes)
+        if not scheduler.get_job('plex_check'):
+            scheduler.add_job(
+                func=check_plex_connection,
+                trigger='interval',
+                minutes=10,
+                id='plex_check',
+                replace_existing=True,
+                next_run_time=datetime.now()  # Run immediately on startup
+            )
+            app.logger.info("Scheduled Plex connection check every 10 minutes")
+
+        # Add Telegram check job (every hour)
+        if not scheduler.get_job('telegram_check'):
+            scheduler.add_job(
+                func=check_telegram_connection,
+                trigger='interval',
+                hours=1,
+                id='telegram_check',
+                replace_existing=True,
+                next_run_time=datetime.now()  # Run immediately on startup
+            )
+            app.logger.info("Scheduled Telegram connection check every hour")
+
+    except Exception as e:
+        app.logger.error(f"Error initializing connection check scheduler: {str(e)}")
 
 # Background processing for Telegram notification queue
 def process_notification_queue():
@@ -1673,8 +1752,63 @@ def api_status():
     return jsonify(response)
 
 
+def refresh_ipt_status():
+    """Refresh IPTorrents connection status with timing info."""
+    try:
+        ipt_config = _load_ipt_config()
+        recent_ipt_entries = _load_recent_ipt_results(ipt_config, limit=50)
+        new_24h, last_check_dt, next_check_dt = _summarize_ipt_activity(ipt_config, recent_ipt_entries)
+        cookies_cfg = ipt_config.get('cookies', {})
+
+        if cookies_cfg.get('uid') and cookies_cfg.get('pass'):
+            if last_check_dt and next_check_dt:
+                # Calculate time until next scan
+                now = datetime.utcnow()
+                # Store originals for isoformat
+                last_check_orig = last_check_dt
+                next_check_orig = next_check_dt
+
+                # Ensure both datetimes are naive for comparison
+                if next_check_dt.tzinfo is not None:
+                    next_check_dt = next_check_dt.replace(tzinfo=None)
+                if last_check_dt.tzinfo is not None:
+                    last_check_dt = last_check_dt.replace(tzinfo=None)
+                time_until = next_check_dt - now
+                hours_until = max(0, time_until.total_seconds() / 3600)
+
+                if hours_until < 1:
+                    wait_msg = "Scanning soon"
+                elif hours_until < 2:
+                    wait_msg = f"Next scan in {int(hours_until * 60)} min"
+                else:
+                    wait_msg = f"Next scan in {int(hours_until)} hr"
+
+                message = f"{wait_msg} • {new_24h} new / 24h"
+                _set_iptorrents_status(
+                    'connected',
+                    message,
+                    last_check=last_check_orig.isoformat(),
+                    next_check=next_check_orig.isoformat()
+                )
+            elif last_check_dt:
+                _set_iptorrents_status(
+                    'connected',
+                    f"{new_24h} new / 24h",
+                    last_check=last_check_dt.isoformat()
+                )
+            else:
+                _set_iptorrents_status('connected', 'Awaiting first scan')
+        else:
+            _set_iptorrents_status('disconnected', 'Credentials required')
+    except Exception as exc:
+        app.logger.error(f"IPT status refresh failed: {exc}", exc_info=True)
+        _set_iptorrents_status('error', 'Status check failed')
+
 @app.route('/api/connections')
 def api_connections():
+    # Refresh IPT status to show latest timing
+    refresh_ipt_status()
+
     with state.lock:
         status = state.connection_status.copy()
     return jsonify(status)
@@ -1784,31 +1918,63 @@ def test_telegram():
         token = data.get('token')
         chat_id = data.get('chat_id')
         no_message = data.get('no_message', False)
-        
+
         if not token or not chat_id:
             return jsonify({'success': False, 'error': 'Missing required fields'})
-            
+
         api_url = f"https://api.telegram.org/bot{token}/getMe"
         response = requests.get(api_url)
         bot_data = response.json()
-        
+
         if not bot_data.get('ok'):
             return jsonify({'success': False, 'error': 'Invalid bot token'})
-        
+
         # If no_message is True, just check if the bot token is valid and don't send a message
         if no_message:
             return jsonify({'success': True})
-            
+
         test_message = f"<b>🎬 FELScanner</b>\n\nTest message sent at {datetime.now().strftime('%H:%M:%S')}"
         api_url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {'chat_id': chat_id, 'text': test_message, 'parse_mode': 'HTML'}
         response = requests.post(api_url, json=payload)
         result = response.json()
-        
+
         if result.get('ok'):
             return jsonify({'success': True})
         else:
             return jsonify({'success': False, 'error': result.get('description', 'Failed to send message')})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/test-flaresolverr', methods=['POST'])
+def test_flaresolverr():
+    try:
+        data = request.json or {}
+        flaresolverr_url = data.get('url', app.config.get('FLARESOLVERR_URL', 'http://localhost:8191'))
+
+        if not flaresolverr_url:
+            return jsonify({'success': False, 'error': 'FlareSolverr URL is required'})
+
+        # Test FlareSolverr by hitting its health endpoint
+        test_url = f"{flaresolverr_url.rstrip('/')}/v1"
+        payload = {
+            "cmd": "request.get",
+            "url": "https://www.google.com",
+            "maxTimeout": 10000
+        }
+
+        response = requests.post(test_url, json=payload, timeout=15)
+        result = response.json()
+
+        if result.get('status') == 'ok':
+            return jsonify({'success': True, 'message': 'FlareSolverr is responding correctly'})
+        else:
+            return jsonify({'success': False, 'error': f"FlareSolverr returned status: {result.get('status', 'unknown')}"})
+
+    except requests.exceptions.Timeout:
+        return jsonify({'success': False, 'error': 'Connection timeout - FlareSolverr is not responding'})
+    except requests.exceptions.ConnectionError:
+        return jsonify({'success': False, 'error': 'Cannot connect to FlareSolverr - check URL and ensure service is running'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
@@ -2001,21 +2167,34 @@ def get_settings():
         'telegram_notify_new_movies': app.config['TELEGRAM_NOTIFY_NEW_MOVIES'],
         'telegram_notify_dv': app.config['TELEGRAM_NOTIFY_DV'],
         'telegram_notify_p7': app.config['TELEGRAM_NOTIFY_P7'],
-        'telegram_notify_atmos': app.config['TELEGRAM_NOTIFY_ATMOS']
+        'telegram_notify_atmos': app.config['TELEGRAM_NOTIFY_ATMOS'],
+        'flaresolverr_url': app.config.get('FLARESOLVERR_URL', ''),
+        'ipt_uid': app.config.get('IPT_UID', ''),
+        'ipt_pass': app.config.get('IPT_PASS', '')
     })
 
 @app.route('/api/settings', methods=['POST'])
 def save_settings_api():
     try:
-        settings = request.json
-        
+        # Accept both JSON and form data
+        if request.is_json:
+            settings = request.json
+        else:
+            settings = request.form.to_dict()
+            # Convert string boolean values to actual booleans for form data
+            for key in settings:
+                if settings[key] in ('true', 'True', 'on'):
+                    settings[key] = True
+                elif settings[key] in ('false', 'False', 'off', ''):
+                    settings[key] = False
+
         # Update configuration
         if 'plex_url' in settings and settings['plex_url']:
             app.config['PLEX_URL'] = settings['plex_url']
-            
+
         if 'plex_token' in settings and settings['plex_token']:
             app.config['PLEX_TOKEN'] = settings['plex_token']
-            
+
         if 'library_name' in settings and settings['library_name']:
             app.config['LIBRARY_NAME'] = settings['library_name']
             
@@ -2075,10 +2254,41 @@ def save_settings_api():
             
         if 'telegram_notify_atmos' in settings:
             app.config['TELEGRAM_NOTIFY_ATMOS'] = settings['telegram_notify_atmos']
-        
+
+        # IPTorrents settings
+        ipt_changed = False
+        if 'flaresolverr_url' in settings and settings['flaresolverr_url']:
+            app.config['FLARESOLVERR_URL'] = settings['flaresolverr_url']
+            ipt_changed = True
+
+        if 'ipt_uid' in settings and settings['ipt_uid']:
+            app.config['IPT_UID'] = settings['ipt_uid']
+            ipt_changed = True
+
+        if 'ipt_pass' in settings and settings['ipt_pass']:
+            app.config['IPT_PASS'] = settings['ipt_pass']
+            ipt_changed = True
+
+        # Save IPT credentials to IPT config file
+        if ipt_changed:
+            try:
+                ipt_config = _load_ipt_config()
+                if 'flaresolverr_url' in settings and settings['flaresolverr_url']:
+                    ipt_config['solverUrl'] = settings['flaresolverr_url']
+                if 'ipt_uid' in settings or 'ipt_pass' in settings:
+                    ipt_config['cookies'] = {
+                        'uid': settings.get('ipt_uid', app.config.get('IPT_UID', '')),
+                        'pass': settings.get('ipt_pass', app.config.get('IPT_PASS', ''))
+                    }
+                _save_ipt_config(ipt_config)
+                app.logger.info("IPT credentials saved to config")
+            except Exception as e:
+                app.logger.error(f"Failed to save IPT credentials: {e}")
+
         save_settings()
         check_plex_connection()
         check_telegram_connection()
+        refresh_ipt_status()
         
         # Reset scanner to pick up new settings
         with state.lock:
@@ -2389,7 +2599,12 @@ def dashboard():
                 if next_check_dt:
                     parts.append(f"Next: {_format_human_datetime(next_check_dt)}")
                 parts.append(f"{new_24h} new / 24h")
-                _set_iptorrents_status('connected', ' | '.join(parts))
+                _set_iptorrents_status(
+                    'connected',
+                    ' | '.join(parts),
+                    last_check=last_check_dt.isoformat() if last_check_dt else None,
+                    next_check=next_check_dt.isoformat() if next_check_dt else None
+                )
             else:
                 _set_iptorrents_status('connected', f"{new_24h} new / 24h | Awaiting first check")
         else:
@@ -2734,6 +2949,9 @@ if app.config['SETUP_COMPLETED'] and app.config['AUTO_START_MODE'] == 'monitor':
 
 # Ensure the IPT scanner is ready both for direct execution and WSGI imports
 init_iptscanner()
+
+# Initialize periodic connection checks
+init_connection_checks()
 
 @app.route('/api/iptscanner/test-run', methods=['POST'])
 def test_run_iptscanner():

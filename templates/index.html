@@ -37,6 +37,13 @@
                 <div class="flex items-center gap-3">
                     <span class="rounded-full bg-emerald-500/10 px-3 py-1 text-sm text-emerald-300" v-if="!state.is_scanning">Idle</span>
                     <span class="rounded-full bg-amber-500/10 px-3 py-1 text-sm text-amber-300 animate-pulse" v-else>Scanning…</span>
+                    <button @click="showSettings = true" class="inline-flex items-center gap-2 rounded-md bg-slate-100/10 px-3 py-2 text-sm font-medium text-slate-100 hover:bg-slate-100/20">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                        Settings
+                    </button>
                     <button @click="refreshAll" class="inline-flex items-center gap-2 rounded-md bg-slate-100/10 px-3 py-2 text-sm font-medium text-slate-100 hover:bg-slate-100/20">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 4v6h6M20 20v-6h-6M20 4l-6 6M4 20l6-6" />
@@ -77,17 +84,6 @@
 
                 <section class="grid gap-6 lg:grid-cols-3">
                     <div class="col-span-2 space-y-6">
-                        <div class="rounded-3xl border border-slate-800 bg-slateglass p-6 backdrop-blur-xl">
-                            <div class="flex items-center justify-between">
-                                <div>
-                                    <h3 class="text-xl font-semibold text-white">Dolby Vision Profiles</h3>
-                                    <p class="text-sm text-slate-400">Distribution across active movies</p>
-                                </div>
-                                <button @click="toggleChartTheme" class="rounded-md border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800">Toggle theme</button>
-                            </div>
-                            <canvas id="profileChart" class="mt-6"></canvas>
-                        </div>
-
                         <div class="rounded-3xl border border-slate-800 bg-slateglass p-6 backdrop-blur-xl">
                             <h3 class="text-xl font-semibold text-white">Recent Dolby Vision Additions</h3>
                             <p class="text-sm text-slate-400">Latest titles enriched with Dolby Vision metadata.</p>
@@ -136,20 +132,25 @@
                             <h3 class="text-xl font-semibold text-white">Connections</h3>
                             <ul class="mt-4 space-y-3">
                                 <li v-for="(details, name) in connections" :key="name" class="flex items-start justify-between rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-2">
-                                    <div>
-                                        <p class="font-medium text-white">{{ name }}</p>
+                                    <div class="flex-1">
+                                        <p class="font-medium text-white capitalize">{{ name }}</p>
                                         <p class="text-xs text-slate-400">{{ details.message }}</p>
                                     </div>
-                                    <span :class="[ 'rounded-full px-2 py-1 text-xs font-medium', details.status === 'connected' ? 'bg-emerald-500/10 text-emerald-300' : details.status === 'error' || details.status === 'disconnected' ? 'bg-rose-500/10 text-rose-300' : 'bg-amber-500/10 text-amber-300' ]">
-                                        {{ details.status ? details.status.toUpperCase() : 'UNKNOWN' }}
-                                    </span>
+                                    <div class="flex items-center gap-2">
+                                        <button v-if="details.status === 'disconnected' || details.status === 'error'" @click="connectService(name)" class="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500">
+                                            Connect
+                                        </button>
+                                        <span :class="[ 'rounded-full px-2 py-1 text-xs font-medium', details.status === 'connected' ? 'bg-emerald-500/10 text-emerald-300' : details.status === 'error' || details.status === 'disconnected' ? 'bg-rose-500/10 text-rose-300' : 'bg-amber-500/10 text-amber-300' ]">
+                                            {{ details.status ? details.status.toUpperCase() : 'UNKNOWN' }}
+                                        </span>
+                                    </div>
                                 </li>
                             </ul>
                         </div>
                     </div>
                 </section>
 
-                <section class="grid gap-6 lg:grid-cols-2">
+                <section class="grid gap-6">
                     <div class="rounded-3xl border border-slate-800 bg-slateglass p-6 backdrop-blur-xl">
                         <h3 class="text-xl font-semibold text-white">Yearly Dolby Vision Growth</h3>
                         <div class="mt-4 space-y-2">
@@ -161,20 +162,6 @@
                                 <div class="w-10 text-right text-sm text-slate-300">{{ year.count }}</div>
                             </div>
                         </div>
-                    </div>
-
-                    <div class="rounded-3xl border border-slate-800 bg-slateglass p-6 backdrop-blur-xl">
-                        <h3 class="text-xl font-semibold text-white">Recent Reports</h3>
-                        <ul class="mt-4 space-y-3 text-sm text-slate-300">
-                            <li v-for="report in reports" :key="report.filename" class="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-2">
-                                <div>
-                                    <p class="font-medium text-white">{{ report.filename }}</p>
-                                    <p class="text-xs text-slate-500">{{ formatTimestamp(report.date) }}</p>
-                                </div>
-                                <span class="text-xs text-slate-400">{{ report.display_size }}</span>
-                            </li>
-                            <li v-if="!reports.length" class="text-sm text-slate-400">No reports yet.</li>
-                        </ul>
                     </div>
                 </section>
 
@@ -214,6 +201,196 @@
                 </section>
             </div>
         </main>
+
+        <!-- Settings Modal -->
+        <div v-if="showSettings" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showSettings = false">
+            <div class="relative w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-3xl border border-slate-700 bg-slate-900 shadow-2xl">
+                <div class="sticky top-0 z-10 flex items-center justify-between border-b border-slate-700 bg-slate-900/95 px-8 py-6 backdrop-blur-sm">
+                    <div>
+                        <h2 class="text-2xl font-semibold text-white">Settings</h2>
+                        <p class="text-sm text-slate-400">Configure FELScanner connections and preferences</p>
+                    </div>
+                    <button @click="showSettings = false" class="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="space-y-6 p-8">
+                    <!-- Plex Connection -->
+                    <section class="rounded-2xl border border-slate-700 bg-slate-800/40 p-6">
+                        <h3 class="mb-4 text-lg font-semibold text-white">Plex Connection</h3>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="mb-1 block text-sm font-medium text-slate-300">Plex URL</label>
+                                <input v-model="settingsForm.plex_url" type="text" class="w-full rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20" placeholder="http://10.0.0.104:32400">
+                            </div>
+                            <div>
+                                <label class="mb-1 block text-sm font-medium text-slate-300">Plex Token</label>
+                                <input v-model="settingsForm.plex_token" type="password" class="w-full rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20" placeholder="Your Plex token">
+                            </div>
+                            <div>
+                                <label class="mb-1 block text-sm font-medium text-slate-300">Library Name</label>
+                                <input v-model="settingsForm.library_name" type="text" class="w-full rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20" placeholder="Movies">
+                            </div>
+                            <button @click="testPlex" :disabled="testStatus.plex.testing" class="w-full rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-60">
+                                {{ testStatus.plex.testing ? 'Testing...' : 'Test Connection' }}
+                            </button>
+                            <p v-if="testStatus.plex.message" :class="['text-sm', testStatus.plex.success ? 'text-emerald-400' : 'text-rose-400']">{{ testStatus.plex.message }}</p>
+                        </div>
+                    </section>
+
+                    <!-- Collections -->
+                    <section class="rounded-2xl border border-slate-700 bg-slate-800/40 p-6">
+                        <h3 class="mb-4 text-lg font-semibold text-white">Collections</h3>
+                        <div class="space-y-4">
+                            <div class="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900/60 p-4">
+                                <div>
+                                    <p class="font-medium text-white">Dolby Vision Collection</p>
+                                    <input v-model="settingsForm.collection_name_all_dv" type="text" class="mt-2 w-full rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none" placeholder="All Dolby Vision">
+                                </div>
+                                <label class="relative inline-flex cursor-pointer items-center">
+                                    <input v-model="settingsForm.collection_enable_dv" type="checkbox" class="peer sr-only">
+                                    <div class="peer h-6 w-11 rounded-full bg-slate-700 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:bg-indigo-500 peer-checked:after:translate-x-full"></div>
+                                </label>
+                            </div>
+                            <div class="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900/60 p-4">
+                                <div>
+                                    <p class="font-medium text-white">Profile 7 FEL Collection</p>
+                                    <input v-model="settingsForm.collection_name_profile7" type="text" class="mt-2 w-full rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none" placeholder="Profile 7 FEL">
+                                </div>
+                                <label class="relative inline-flex cursor-pointer items-center">
+                                    <input v-model="settingsForm.collection_enable_p7" type="checkbox" class="peer sr-only">
+                                    <div class="peer h-6 w-11 rounded-full bg-slate-700 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:bg-indigo-500 peer-checked:after:translate-x-full"></div>
+                                </label>
+                            </div>
+                            <div class="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900/60 p-4">
+                                <div>
+                                    <p class="font-medium text-white">TrueHD Atmos Collection</p>
+                                    <input v-model="settingsForm.collection_name_truehd_atmos" type="text" class="mt-2 w-full rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none" placeholder="TrueHD Atmos">
+                                </div>
+                                <label class="relative inline-flex cursor-pointer items-center">
+                                    <input v-model="settingsForm.collection_enable_atmos" type="checkbox" class="peer sr-only">
+                                    <div class="peer h-6 w-11 rounded-full bg-slate-700 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:bg-indigo-500 peer-checked:after:translate-x-full"></div>
+                                </label>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- Automation & Reports -->
+                    <section class="rounded-2xl border border-slate-700 bg-slate-800/40 p-6">
+                        <h3 class="mb-4 text-lg font-semibold text-white">Automation & Reports</h3>
+                        <div class="grid gap-4 md:grid-cols-2">
+                            <div>
+                                <label class="mb-1 block text-sm font-medium text-slate-300">Scan Frequency (hours)</label>
+                                <input v-model.number="settingsForm.scan_frequency" type="number" min="1" class="w-full rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-white focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20">
+                            </div>
+                            <div>
+                                <label class="mb-1 block text-sm font-medium text-slate-300">Auto Start Behavior</label>
+                                <select v-model="settingsForm.auto_start" class="w-full rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-white focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20">
+                                    <option value="none">None</option>
+                                    <option value="scan">Scan</option>
+                                    <option value="verify">Verify</option>
+                                    <option value="monitor">Monitor</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="mb-1 block text-sm font-medium text-slate-300">Keep Last N Reports</label>
+                                <input v-model.number="settingsForm.max_reports_size" type="number" min="1" class="w-full rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-white focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20">
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- Telegram Notifications -->
+                    <section class="rounded-2xl border border-slate-700 bg-slate-800/40 p-6">
+                        <h3 class="mb-4 text-lg font-semibold text-white">Telegram Notifications</h3>
+                        <div class="space-y-4">
+                            <div class="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900/60 p-4">
+                                <p class="font-medium text-white">Enable Telegram Notifications</p>
+                                <label class="relative inline-flex cursor-pointer items-center">
+                                    <input v-model="settingsForm.telegram_enabled" type="checkbox" class="peer sr-only">
+                                    <div class="peer h-6 w-11 rounded-full bg-slate-700 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:bg-indigo-500 peer-checked:after:translate-x-full"></div>
+                                </label>
+                            </div>
+                            <div v-if="settingsForm.telegram_enabled" class="space-y-4">
+                                <div>
+                                    <label class="mb-1 block text-sm font-medium text-slate-300">Bot Token</label>
+                                    <input v-model="settingsForm.telegram_token" type="password" class="w-full rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20">
+                                </div>
+                                <div>
+                                    <label class="mb-1 block text-sm font-medium text-slate-300">Chat ID</label>
+                                    <input v-model="settingsForm.telegram_chat_id" type="text" class="w-full rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20">
+                                </div>
+                                <button @click="testTelegram" :disabled="testStatus.telegram.testing" class="w-full rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-60">
+                                    {{ testStatus.telegram.testing ? 'Testing...' : 'Test Connection (Sends Message)' }}
+                                </button>
+                                <p v-if="testStatus.telegram.message" :class="['text-sm', testStatus.telegram.success ? 'text-emerald-400' : 'text-rose-400']">{{ testStatus.telegram.message }}</p>
+                                <div class="space-y-2">
+                                    <label class="flex items-center gap-3 rounded-lg bg-slate-900/60 p-3">
+                                        <input v-model="settingsForm.telegram_notify_all_updates" type="checkbox" class="h-4 w-4 rounded border-slate-600 bg-slate-700 text-indigo-500 focus:ring-2 focus:ring-indigo-500/20">
+                                        <span class="text-sm text-slate-300">Notify on all updates</span>
+                                    </label>
+                                    <label class="flex items-center gap-3 rounded-lg bg-slate-900/60 p-3">
+                                        <input v-model="settingsForm.telegram_notify_new_movies" type="checkbox" class="h-4 w-4 rounded border-slate-600 bg-slate-700 text-indigo-500 focus:ring-2 focus:ring-indigo-500/20">
+                                        <span class="text-sm text-slate-300">Notify on new movies</span>
+                                    </label>
+                                    <label class="flex items-center gap-3 rounded-lg bg-slate-900/60 p-3">
+                                        <input v-model="settingsForm.telegram_notify_dv" type="checkbox" class="h-4 w-4 rounded border-slate-600 bg-slate-700 text-indigo-500 focus:ring-2 focus:ring-indigo-500/20">
+                                        <span class="text-sm text-slate-300">Notify on Dolby Vision matches</span>
+                                    </label>
+                                    <label class="flex items-center gap-3 rounded-lg bg-slate-900/60 p-3">
+                                        <input v-model="settingsForm.telegram_notify_p7" type="checkbox" class="h-4 w-4 rounded border-slate-600 bg-slate-700 text-indigo-500 focus:ring-2 focus:ring-indigo-500/20">
+                                        <span class="text-sm text-slate-300">Notify on Profile 7 matches</span>
+                                    </label>
+                                    <label class="flex items-center gap-3 rounded-lg bg-slate-900/60 p-3">
+                                        <input v-model="settingsForm.telegram_notify_atmos" type="checkbox" class="h-4 w-4 rounded border-slate-600 bg-slate-700 text-indigo-500 focus:ring-2 focus:ring-indigo-500/20">
+                                        <span class="text-sm text-slate-300">Notify on Atmos matches</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- IPTorrents -->
+                    <section class="rounded-2xl border border-slate-700 bg-slate-800/40 p-6">
+                        <h3 class="mb-4 text-lg font-semibold text-white">IPTorrents Configuration</h3>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="mb-1 block text-sm font-medium text-slate-300">FlareSolverr URL</label>
+                                <input v-model="settingsForm.flaresolverr_url" type="text" class="w-full rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20" placeholder="http://localhost:8191">
+                            </div>
+                            <button @click="testFlareSolverr" :disabled="testStatus.flaresolverr.testing" class="w-full rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-60">
+                                {{ testStatus.flaresolverr.testing ? 'Testing...' : 'Test FlareSolverr' }}
+                            </button>
+                            <p v-if="testStatus.flaresolverr.message" :class="['text-sm', testStatus.flaresolverr.success ? 'text-emerald-400' : 'text-rose-400']">{{ testStatus.flaresolverr.message }}</p>
+                            <div>
+                                <label class="mb-1 block text-sm font-medium text-slate-300">IPT UID Cookie</label>
+                                <input v-model="settingsForm.ipt_uid" type="text" class="w-full rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20">
+                            </div>
+                            <div>
+                                <label class="mb-1 block text-sm font-medium text-slate-300">IPT Pass Cookie</label>
+                                <input v-model="settingsForm.ipt_pass" type="text" class="w-full rounded-lg border border-slate-600 bg-slate-900 px-4 py-2 text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20">
+                            </div>
+                            <button @click="testIPT" :disabled="testStatus.ipt.testing" class="w-full rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-60">
+                                {{ testStatus.ipt.testing ? 'Testing...' : 'Test IPTorrents Login' }}
+                            </button>
+                            <p v-if="testStatus.ipt.message" :class="['text-sm', testStatus.ipt.success ? 'text-emerald-400' : 'text-rose-400']">{{ testStatus.ipt.message }}</p>
+                        </div>
+                    </section>
+                </div>
+
+                <div class="sticky bottom-0 flex items-center justify-between border-t border-slate-700 bg-slate-900/95 px-8 py-6 backdrop-blur-sm">
+                    <p class="text-sm text-slate-400" v-if="settingsMessage">{{ settingsMessage }}</p>
+                    <div class="flex gap-3 ml-auto">
+                        <button @click="showSettings = false" class="rounded-lg border border-slate-600 px-6 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800">Cancel</button>
+                        <button @click="saveSettings" :disabled="savingSettings" class="rounded-lg bg-indigo-500 px-6 py-2 text-sm font-medium text-white hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-60">
+                            {{ savingSettings ? 'Saving...' : 'Save Settings' }}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
     {% endraw %}
 
