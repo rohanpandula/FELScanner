@@ -647,24 +647,15 @@
                                         </div>
                                         
                                         <div class="mb-3">
-                                            <label for="settings-ipt-headless" class="form-label">Browser Mode</label>
-                                            <select class="form-control" id="settings-ipt-headless">
-                                                <option value="true" selected>Headless (invisible)</option>
-                                                <option value="false">Visible browser</option>
-                                            </select>
-                                            <div class="form-text">Whether to show the browser window when scanning</div>
+                                            <label for="settings-ipt-solver-url" class="form-label">FlareSolverr URL</label>
+                                            <input type="text" class="form-control" id="settings-ipt-solver-url" value="http://localhost:8191">
+                                            <div class="form-text">Endpoint for your FlareSolverr instance (e.g. http://localhost:8191)</div>
                                         </div>
                                         
                                         <div class="mb-3">
-                                            <label for="settings-ipt-data-path" class="form-label">Data Storage Path</label>
-                                            <input type="text" class="form-control" id="settings-ipt-data-path">
-                                            <div class="form-text">Path to store IPTScanner data files</div>
-                                        </div>
-                                        
-                                        <div class="mb-3">
-                                            <label for="settings-ipt-userdata-dir" class="form-label">Browser Profile Path</label>
-                                            <input type="text" class="form-control" id="settings-ipt-userdata-dir">
-                                            <div class="form-text">Path to store browser profile data</div>
+                                            <label for="settings-ipt-timeout" class="form-label">Challenge Timeout (ms)</label>
+                                            <input type="number" class="form-control" id="settings-ipt-timeout" value="60000" min="1000" step="1000">
+                                            <div class="form-text">Maximum time FlareSolverr can spend solving Cloudflare challenges</div>
                                         </div>
                                         
                                         <div class="form-check mb-3">

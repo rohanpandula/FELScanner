@@ -107,6 +107,8 @@ function collapseHeroIfSetupComplete() {
 }
 
 function activateDashboardTab(tabId) {
+    console.log('FELScanner: activateDashboardTab called with', tabId);
+
     const heroSection = document.getElementById('dashboard-hero');
     if (heroSection) {
         heroSection.classList.add('hero-collapsed');
@@ -119,14 +121,26 @@ function activateDashboardTab(tabId) {
         link.setAttribute('aria-selected', isActive ? 'true' : 'false');
     });
 
-    document.querySelectorAll('.tab-pane').forEach(pane => {
-        pane.classList.remove('active', 'show');
-    });
+    const allTabIds = ['home', 'reports', 'iptscanner', 'settings'];
+    allTabIds.forEach(id => {
+        const pane = document.getElementById(id);
+        if (!pane) {
+            console.warn('FELScanner: Missing pane element for id', id);
+            return;
+        }
 
-    const targetPane = document.getElementById(tabId);
-    if (targetPane) {
-        targetPane.classList.add('active', 'show');
-    }
+        if (id === tabId) {
+            pane.classList.add('active', 'show');
+            pane.style.display = 'block';
+            pane.style.opacity = '1';
+            console.log('FELScanner: Activated pane', id, 'classes:', pane.className, 'display:', pane.style.display, 'opacity:', pane.style.opacity);
+        } else {
+            pane.classList.remove('active', 'show');
+            pane.style.display = 'none';
+            pane.style.opacity = '0';
+            console.log('FELScanner: Deactivated pane', id, 'classes:', pane.className, 'display:', pane.style.display, 'opacity:', pane.style.opacity);
+        }
+    });
 
     if (tabId === 'reports') {
         loadReports();
@@ -137,7 +151,7 @@ function activateDashboardTab(tabId) {
     }
 
     // Keep the tab content in view so the change is obvious even with a tall hero section.
-    const scrollTarget = targetPane || mainDashboard;
+    const scrollTarget = document.getElementById(tabId) || mainDashboard;
     if (scrollTarget && typeof scrollTarget.scrollIntoView === 'function') {
         // Use a small timeout so the DOM has applied visibility before scrolling.
         setTimeout(() => {
@@ -147,6 +161,38 @@ function activateDashboardTab(tabId) {
 }
 
 window.activateDashboardTab = activateDashboardTab;
+
+// Ensure dashboard tab buttons always trigger our handler, even if inline handlers are blocked.
+function registerDashboardTabClicks() {
+    const container = document.getElementById('dashboard-tabs');
+    if (!container) {
+        console.warn('FELScanner: No dashboard tab container found.');
+        return;
+    }
+
+    // Remove previous listener to avoid stacking.
+    if (container._felscannerTabDelegationHandler) {
+        container.removeEventListener('click', container._felscannerTabDelegationHandler, true);
+    }
+
+    const handler = event => {
+        const button = event.target.closest('[data-dashboard-tab]');
+        if (!button) {
+            return;
+        }
+
+        event.preventDefault();
+        const targetTab = button.getAttribute('data-dashboard-tab');
+        if (targetTab) {
+            activateDashboardTab(targetTab);
+            console.log(`FELScanner: Activated dashboard tab "${targetTab}" via delegated handler.`);
+        }
+    };
+
+    container._felscannerTabDelegationHandler = handler;
+    container.addEventListener('click', handler, true);
+    console.log('FELScanner: Registered delegated tab handler on #dashboard-tabs.');
+}
 
 const onboardingSteps = [
     {
@@ -422,16 +468,17 @@ document.getElementById('test-run-ipt-scanner').addEventListener('click', async 
 const originalSaveSettings = document.getElementById('save-settings-btn').onclick;
 document.getElementById('save-settings-btn').onclick = async function(e) {
     // Collect IPT settings
+    const intervalSelection = document.getElementById('settings-ipt-check-interval').value;
+    const timeoutValue = parseInt(document.getElementById('settings-ipt-timeout').value, 10);
     const iptSettings = {
         enabled: document.getElementById('settings-ipt-enabled').checked,
-        searchTerm: document.getElementById('settings-ipt-search').value,
-        checkInterval: document.getElementById('settings-ipt-check-interval').value,
-        headless: document.getElementById('settings-ipt-headless').value === 'true',
-        dataPath: document.getElementById('settings-ipt-data-path').value,
-        userDataDir: document.getElementById('settings-ipt-userdata-dir').value,
+        search_term: document.getElementById('settings-ipt-search').value.trim(),
+        check_interval: valueToCron(intervalSelection),
+        solver_url: document.getElementById('settings-ipt-solver-url').value.trim(),
+        solver_timeout: Number.isFinite(timeoutValue) && timeoutValue > 0 ? timeoutValue : 60000,
         debug: document.getElementById('settings-ipt-debug').checked,
-        uid: document.getElementById('settings-ipt-uid').value,
-        pass: document.getElementById('settings-ipt-pass').value
+        uid: document.getElementById('settings-ipt-uid').value.trim(),
+        pass: document.getElementById('settings-ipt-pass').value.trim()
     };
     
     // Save IPT settings first
@@ -565,32 +612,38 @@ async function loadIPTSettings() {
         }
 
         const settings = await response.json();
+        const searchTerm = settings.searchTerm || settings.search_term || 'BL+EL+RPU';
+        const checkInterval = settings.checkInterval || settings.check_interval || '0 */2 * * *';
+        const lastUpdate = settings.lastUpdateTime || settings.last_update_time;
+        const solverUrl = settings.solverUrl || settings.solver_url || 'http://localhost:8191';
+        const solverTimeout = settings.solverTimeout || settings.solver_timeout || 60000;
         
         // Update UI with settings
-        document.getElementById('ipt-search-term').textContent = settings.searchTerm || 'BL+EL+RPU';
-        document.getElementById('ipt-schedule').textContent = cronToHumanReadable(settings.checkInterval);
-        document.getElementById('ipt-last-check').textContent = settings.lastUpdateTime 
-            ? formatDateTime(settings.lastUpdateTime) 
+        document.getElementById('ipt-search-term').textContent = searchTerm;
+        document.getElementById('ipt-schedule').textContent = cronToHumanReadable(checkInterval);
+        document.getElementById('ipt-last-check').textContent = lastUpdate
+            ? formatDateTime(lastUpdate) 
             : 'Never';
         
         // Update settings form
         document.getElementById('settings-ipt-enabled').checked = settings.enabled !== false;
-        document.getElementById('settings-ipt-search').value = settings.searchTerm || 'BL+EL+RPU';
+        document.getElementById('settings-ipt-search').value = searchTerm;
         
         // Convert cron to dropdown selection
-        const interval = cronToValue(settings.checkInterval);
+        const interval = cronToValue(checkInterval);
         if (interval) {
             document.getElementById('settings-ipt-check-interval').value = interval;
         }
         
-        document.getElementById('settings-ipt-headless').value = settings.headless !== false ? 'true' : 'false';
-        document.getElementById('settings-ipt-data-path').value = settings.dataPath || '';
-        document.getElementById('settings-ipt-userdata-dir').value = settings.userDataDir || '';
+        document.getElementById('settings-ipt-solver-url').value = solverUrl;
+        document.getElementById('settings-ipt-timeout').value = solverTimeout;
         document.getElementById('settings-ipt-debug').checked = settings.debug === true;
         
         // Cookie values should only be shown if explicitly requested for security
-        if (settings.uid) document.getElementById('settings-ipt-uid').placeholder = '••••••••• (stored)';
-        if (settings.pass) document.getElementById('settings-ipt-pass').placeholder = '••••••••• (stored)';
+        if (settings.hasCookies || settings.has_cookies) {
+            document.getElementById('settings-ipt-uid').placeholder = '••••••••• (stored)';
+            document.getElementById('settings-ipt-pass').placeholder = '••••••••• (stored)';
+        }
         
         return settings;
     } catch (error) {
@@ -844,6 +897,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     setupTabFallbacks();
 
+    // Make sure dashboard tab buttons are wired even if inline handlers are blocked.
+    registerDashboardTabClicks();
+
     loadReports();
     
     // Load settings first
@@ -1032,6 +1088,9 @@ testPlexBtn.addEventListener('click', async () => {
         plexError.textContent = 'Please fill in all fields';
         plexError.style.display = 'block';
         plexSuccess.style.display = 'none';
+        if (typeof showToast === 'function') {
+            showToast('Please enter Plex URL, token, and library before testing.', 'warning');
+        }
         return;
     }
     
@@ -1065,15 +1124,24 @@ testPlexBtn.addEventListener('click', async () => {
             nextBtn.style.display = 'inline-block';
 
             showBuddyCelebration('plexSuccess');
+            if (typeof showToast === 'function') {
+                showToast(`Plex connection validated with ${data.movie_count} movies.`, 'success');
+            }
         } else {
             plexError.textContent = data.error || 'Connection failed';
             plexError.style.display = 'block';
             plexSuccess.style.display = 'none';
+            if (typeof showToast === 'function') {
+                showToast(data.error || 'Plex connection failed.', 'error');
+            }
         }
     } catch (error) {
         plexError.textContent = 'Connection error';
         plexError.style.display = 'block';
         plexSuccess.style.display = 'none';
+        if (typeof showToast === 'function') {
+            showToast('Unable to reach Plex. Please verify the address and token.', 'error');
+        }
     }
 });
 

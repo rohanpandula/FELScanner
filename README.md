@@ -10,6 +10,7 @@ FELScanner is a web application that scans your Plex library for movies with Dol
 - **Detailed Reports**: Generate CSV and JSON reports with comprehensive movie information
 - **Web Interface**: User-friendly interface with dark mode support
 - **IPTorrents Scanner**: Integrated tool to monitor IPTorrents for new Dolby Vision content
+- **Cloudflare Bypass via FlareSolverr**: Seamlessly solve Cloudflare challenges by proxying IPTorrents requests through FlareSolverr
 
 ## Configuration and Security
 
@@ -36,6 +37,16 @@ IPT_PASS=your_iptorrents_passkey
 ```
 
 See the `.env.example` file for a complete list of available environment variables.
+
+### FlareSolverr
+
+The IPTorrents scanner relies on [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) to bypass Cloudflare challenges. Launch FlareSolverr alongside FELScanner and point the IPT settings panel at its HTTP endpoint (defaults to `http://localhost:8191`). A quick one-liner to start it with Docker:
+
+```bash
+docker run -d --name flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest
+```
+
+If you run FlareSolverr elsewhere, update the “FlareSolverr URL” field in FELScanner’s settings so the scraper can route requests through that proxy.
 
 ### Settings Panel
 
@@ -70,7 +81,7 @@ To keep your installation secure, follow these guidelines:
 
 - **`iptscanner/`**: Directory containing the IPTorrents scanning functionality.
   - **`iptscanner.py`**: Python wrapper for the Node.js script, integrated with the main app.
-  - **`monitor-iptorrents.js`**: Node.js script that handles the actual IPTorrents website scraping.
+  - **`monitor-iptorrents.js`**: Node.js script that coordinates IPTorrents polling through FlareSolverr and tracks previously seen torrents.
   - **`package.json`**: Node.js dependencies for the IPTScanner.
 
 ### Configuration Files

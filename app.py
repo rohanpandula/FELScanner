@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, redirect, url_for, flash
 import os
 import json
 import logging
@@ -7,14 +7,17 @@ import time
 import threading
 import requests
 import pytz
+import shutil
 from datetime import datetime, timedelta
 from flask_compress import Compress
 from plexapi.server import PlexServer
 from scanner import PlexDVScanner
 import sys
 import subprocess
+import tempfile
 from typing import Any, Awaitable, Callable, Optional
 from urllib.parse import urlparse
+import re
 from requests import exceptions as requests_exceptions
 
 
@@ -24,6 +27,7 @@ log = logging.getLogger()
 
 # Initialize Flask app
 app = Flask(__name__, static_folder='static', template_folder='templates')
+app.secret_key = os.environ.get('SECRET_KEY', 'felscanner-secret-key')
 compress = Compress()
 compress.init_app(app)
 
@@ -90,12 +94,517 @@ class AppState:
         self.connection_status = {
             'plex': {'status': 'unknown', 'message': 'Not connected'},
             'telegram': {'status': 'unknown', 'message': 'Not connected'},
-            'server': {'status': 'connected', 'message': 'Web server running'}
+            'server': {'status': 'connected', 'message': 'Web server running'},
+            'iptorrents': {'status': 'unknown', 'message': 'Not connected'}
         }
         self.lock = threading.RLock()  # For thread-safe state updates
 
 # Create application state
 state = AppState()
+
+
+def _human_readable_size(num_bytes: int) -> str:
+    """Return a human friendly file size string."""
+    try:
+        num = float(num_bytes)
+    except (TypeError, ValueError):
+        return "0 B"
+
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    for unit in units:
+        if num < 1024 or unit == units[-1]:
+            return f"{num:.1f} {unit}" if unit != "B" else f"{int(num)} {unit}"
+        num /= 1024
+
+
+def _list_reports(limit: Optional[int] = None) -> list[dict]:
+    """Return the available reports sorted by newest first."""
+    reports = []
+    reports_dir = app.config.get('REPORTS_FOLDER_PATH', EXPORTS_DIR)
+    if not os.path.isdir(reports_dir):
+        return []
+
+    for filename in os.listdir(reports_dir):
+        if not (filename.endswith('.csv') or filename.endswith('.json')):
+            continue
+        file_path = os.path.join(reports_dir, filename)
+        try:
+            modified = datetime.fromtimestamp(os.path.getmtime(file_path))
+            size_bytes = os.path.getsize(file_path)
+        except OSError:
+            continue
+
+        reports.append({
+            'filename': filename,
+            'date': modified,
+            'size': size_bytes,
+            'display_size': _human_readable_size(size_bytes)
+        })
+
+    reports.sort(key=lambda item: item['date'], reverse=True)
+    if limit is not None:
+        return reports[:limit]
+    return reports
+
+
+def _trigger_scan_operation(operation: str) -> tuple[bool, Optional[str]]:
+    """Start a scan or verify job, returning (success, error_message)."""
+    with state.lock:
+        if state.is_scanning:
+            return False, 'A scan is already in progress.'
+
+    if operation not in ('scan', 'verify'):
+        return False, 'Invalid operation.'
+
+    try:
+        if not state.scanner_obj:
+            state.scanner_obj = initialize_scanner()
+
+        if not state.scanner_obj:
+            return False, 'Unable to initialise the scanner.'
+
+        target = run_scan_thread if operation == 'scan' else run_verify_thread
+        thread = threading.Thread(target=target)
+        thread.daemon = True
+        thread.start()
+        return True, None
+    except Exception as exc:  # pragma: no cover - defensive
+        return False, str(exc)
+
+
+def _toggle_monitor_action(action: str) -> tuple[bool, Optional[str]]:
+    """Start or stop monitor mode."""
+    with state.lock:
+        is_scanning = state.is_scanning
+        is_monitoring = state.monitor_active
+
+    if action == 'start':
+        if is_monitoring:
+            return True, 'Monitor already running.'
+        if is_scanning:
+            return False, 'Cannot start monitor while a scan is running.'
+
+        with state.lock:
+            state.monitor_active = True
+
+        monitor_thread = threading.Thread(target=run_monitor)
+        monitor_thread.daemon = True
+        monitor_thread.start()
+        return True, None
+
+    if action == 'stop':
+        if not is_monitoring:
+            return True, 'Monitor already stopped.'
+
+        with state.lock:
+            state.monitor_active = False
+        return True, None
+
+    return False, 'Invalid monitor action.'
+
+
+def _load_ipt_config() -> dict:
+    """Load (and if necessary create) the IPT scanner configuration."""
+    storage_dir = _iptscanner_storage_dir()
+    config_path = _iptscanner_config_path()
+    cookies_path = _iptscanner_cookies_path()
+    known_path = _iptscanner_known_torrents_path()
+    results_path = os.path.join(storage_dir, 'data', 'latest_results.json')
+
+    os.makedirs(storage_dir, exist_ok=True)
+    os.makedirs(os.path.join(storage_dir, 'data'), exist_ok=True)
+
+    default_config = {
+        'searchTerm': 'BL+EL+RPU',
+        'checkInterval': '0 */2 * * *',
+        'enabled': True,
+        'cookies': {'uid': '', 'pass': ''},
+        'cookiesPath': cookies_path,
+        'knownTorrentsPath': known_path,
+        'resultsPath': results_path,
+        'solverUrl': os.environ.get('FLARESOLVERR_URL', 'http://localhost:8191'),
+        'solverTimeout': 60000,
+        'debug': False,
+        'cachedCookies': [],
+        'lastUpdateTime': None
+    }
+
+    if not os.path.exists(config_path):
+        with open(config_path, 'w') as handle:
+            json.dump(default_config, handle, indent=4)
+        return default_config
+
+    try:
+        with open(config_path, 'r') as handle:
+            config = json.load(handle)
+    except Exception:
+        with open(config_path, 'w') as handle:
+            json.dump(default_config, handle, indent=4)
+        return default_config
+
+    config.setdefault('searchTerm', default_config['searchTerm'])
+    config.setdefault('checkInterval', default_config['checkInterval'])
+    config.setdefault('enabled', True)
+    config.setdefault('cookies', {'uid': '', 'pass': ''})
+    config.setdefault('cookiesPath', cookies_path)
+    config.setdefault('knownTorrentsPath', known_path)
+    config.setdefault('resultsPath', results_path)
+    config.setdefault('solverUrl', default_config['solverUrl'])
+    config.setdefault('solverTimeout', default_config['solverTimeout'])
+    config.setdefault('debug', False)
+    config.setdefault('cachedCookies', [])
+    config.setdefault('lastUpdateTime', None)
+
+    try:
+        config['solverTimeout'] = int(config.get('solverTimeout', default_config['solverTimeout']))
+    except (TypeError, ValueError):
+        config['solverTimeout'] = default_config['solverTimeout']
+
+    if not isinstance(config.get('solverUrl'), str) or not config['solverUrl'].strip():
+        config['solverUrl'] = default_config['solverUrl']
+
+    return config
+
+
+def _save_ipt_config(config: dict) -> bool:
+    """Persist the IPT scanner configuration."""
+    try:
+        config['solverTimeout'] = int(config.get('solverTimeout', 60000))
+        redacted = dict(config)
+        if isinstance(redacted.get('cookies'), dict):
+            redacted['cookies'] = {
+                key: '***' if value else ''
+                for key, value in redacted['cookies'].items()
+            }
+        if isinstance(redacted.get('cachedCookies'), list):
+            redacted['cachedCookies'] = [
+                {**cookie, 'value': '***'}
+                if isinstance(cookie, dict) and cookie.get('value')
+                else cookie
+                for cookie in redacted['cachedCookies']
+            ]
+        log.debug(f"Saving IPT config: {redacted}")
+        with open(_iptscanner_config_path(), 'w') as handle:
+            json.dump(config, handle, indent=4)
+        return True
+    except Exception as exc:
+        log.error(f"Failed to save IPT config: {exc}")
+        return False
+
+
+def _set_iptorrents_status(status: str, message: str) -> None:
+    with state.lock:
+        state.connection_status['iptorrents'] = {
+            'status': status,
+            'message': message
+        }
+
+
+def _write_ipt_cookies_file(config: dict) -> str:
+    cookies_cfg = config.setdefault('cookies', {})
+    uid = cookies_cfg.get('uid', '').strip()
+    passkey = cookies_cfg.get('pass', '').strip()
+    if not uid or not passkey:
+        raise ValueError('UID and pass cookies are required.')
+
+    cookies_path = config.get('cookiesPath', _iptscanner_cookies_path())
+    cookie_payload: list[dict] = [
+        {
+            'name': 'uid',
+            'value': uid,
+            'domain': '.iptorrents.com',
+            'path': '/',
+            'expires': int(time.time()) + 86400 * 30
+        },
+        {
+            'name': 'pass',
+            'value': passkey,
+            'domain': '.iptorrents.com',
+            'path': '/',
+            'expires': int(time.time()) + 86400 * 30
+        }
+    ]
+    extra_cookies = []
+    for cookie in config.get('cachedCookies', []):
+        if not isinstance(cookie, dict):
+            continue
+        name = (cookie.get('name') or '').strip()
+        if name in {'uid', 'pass'} or not name:
+            continue
+        extra_cookies.append({
+            'name': name,
+            'value': cookie.get('value', ''),
+            'domain': cookie.get('domain', '.iptorrents.com'),
+            'path': cookie.get('path', '/'),
+            'expires': int(cookie.get('expires', time.time() + 86400))
+        })
+
+    cookie_payload.extend(extra_cookies)
+    os.makedirs(os.path.dirname(cookies_path), exist_ok=True)
+    with open(cookies_path, 'w') as handle:
+        json.dump(cookie_payload, handle, indent=2)
+    return cookies_path
+
+
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    """Convert an ISO8601-like string to a datetime (UTC) if possible."""
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        value_str = str(value).strip()
+        if not value_str:
+            return None
+        if value_str.endswith('Z'):
+            value_str = value_str[:-1] + '+00:00'
+        return datetime.fromisoformat(value_str)
+    except Exception:
+        return None
+
+
+def _parse_relative_timestamp(text: str, now: datetime) -> Optional[datetime]:
+    """Convert phrases like '2.5 hours ago' into an absolute timestamp."""
+    if not text:
+        return None
+
+    cleaned = text.lower().strip()
+    if 'ago' not in cleaned:
+        return None
+    if ' by ' in cleaned:
+        cleaned = cleaned.split(' by ')[0].strip()
+
+    parts = cleaned.split()
+    if not parts:
+        return None
+
+    try:
+        value = float(parts[0])
+    except (TypeError, ValueError):
+        return None
+
+    if 'min' in cleaned:
+        delta = timedelta(minutes=value)
+    elif 'hour' in cleaned:
+        delta = timedelta(hours=value)
+    elif 'day' in cleaned:
+        delta = timedelta(days=value)
+    elif 'week' in cleaned:
+        delta = timedelta(weeks=value)
+    elif 'month' in cleaned:
+        delta = timedelta(days=value * 30)
+    elif 'year' in cleaned:
+        delta = timedelta(days=value * 365)
+    else:
+        return None
+
+    return now - delta
+
+
+def _cron_interval_to_timedelta(expr: Optional[str]) -> timedelta:
+    """Best-effort conversion from a cron string to a reasonable timedelta."""
+    default = timedelta(hours=2)
+    if not expr:
+        return default
+    parts = expr.strip().split()
+    if len(parts) < 2:
+        return default
+
+    try:
+        if parts[0].startswith('*/'):
+            minutes = int(parts[0][2:])
+            return timedelta(minutes=max(minutes, 1))
+        if parts[0] == '0' and parts[1].startswith('*/'):
+            hours = int(parts[1][2:])
+            return timedelta(hours=max(hours, 1))
+        if len(parts) >= 3 and parts[0] == '0' and parts[1] == '0' and parts[2].startswith('*/'):
+            days = int(parts[2][2:])
+            return timedelta(days=max(days, 1))
+    except ValueError:
+        return default
+
+    return default
+
+
+def _summarize_ipt_activity(config: dict, recent_items: list[dict]) -> tuple[int, Optional[datetime], Optional[datetime]]:
+    """Return (new_items_last_24h, last_check_time, next_check_time)."""
+    now = datetime.utcnow()
+    new_count = 0
+
+    for item in recent_items or []:
+        raw_added = item.get('addedRaw') or item.get('added')
+        timestamp = _parse_iso_datetime(raw_added)
+        if timestamp is None and isinstance(raw_added, str):
+            timestamp = _parse_relative_timestamp(raw_added, now)
+
+        if timestamp is not None and now - timestamp <= timedelta(hours=24):
+            new_count += 1
+
+    last_check = _parse_iso_datetime(config.get('lastUpdateTime'))
+    interval = _cron_interval_to_timedelta(config.get('checkInterval', '0 */2 * * *'))
+    next_check = last_check + interval if last_check else None
+
+    return new_count, last_check, next_check
+
+
+def _format_human_datetime(value: Optional[datetime]) -> str:
+    """Render a datetime as a concise human readable string."""
+    if not value:
+        return 'Unknown'
+    now = datetime.utcnow()
+    delta = abs(now - value)
+    try:
+        local_value = value.astimezone()
+    except Exception:
+        local_value = value
+    if delta <= timedelta(hours=24):
+        return local_value.strftime('%-I:%M %p')
+    if delta <= timedelta(days=7):
+        return local_value.strftime('%a %-I:%M %p')
+    return local_value.strftime('%Y-%m-%d %-I:%M %p')
+
+
+def _fetch_ipt_results(config: dict, limit: int = 50, force: bool = True) -> list[dict]:
+    search_term = (config.get('searchTerm') or '').strip()
+    if not search_term:
+        raise ValueError('Search term is required.')
+
+    cookies_path = _write_ipt_cookies_file(config)
+    script_path = os.path.join(APP_ROOT, 'iptradar', 'fetch-once.js')
+    if not os.path.exists(script_path):
+        raise FileNotFoundError('IPT fetch script not found. Expected at iptradar/fetch-once.js')
+
+    results_path = config.get('resultsPath') or os.path.join(_iptscanner_storage_dir(), 'data', 'latest_results.json')
+
+    if not force and os.path.exists(results_path):
+        try:
+            with open(results_path, 'r') as handle:
+                cached = json.load(handle)
+            if isinstance(cached, dict) and cached.get('torrents'):
+                return cached['torrents'][:limit]
+        except Exception:
+            pass
+
+    with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as tmp_file:
+        temp_output = tmp_file.name
+
+    solver_url = config.get('solverUrl', 'http://localhost:8191')
+    solver_timeout = int(config.get('solverTimeout', 60000))
+    cmd = [
+        'node',
+        script_path,
+        '-c',
+        cookies_path,
+        '-s',
+        search_term,
+        '-o',
+        temp_output,
+        '-u',
+        solver_url,
+        '-t',
+        str(solver_timeout)
+    ]
+    if config.get('debug'):
+        cmd.append('--debug')
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        os.unlink(temp_output)
+        stderr = result.stderr.strip() or result.stdout.strip() or 'Unknown error'
+        raise RuntimeError(f'IPT fetch failed: {stderr}')
+
+    try:
+        with open(temp_output, 'r') as handle:
+            data = json.load(handle)
+    finally:
+        os.unlink(temp_output)
+
+    solver_cookies = data.get('solverCookies')
+    if isinstance(solver_cookies, list):
+        filtered_cookies = []
+        for cookie in solver_cookies:
+            if not isinstance(cookie, dict):
+                continue
+            name = (cookie.get('name') or '').strip()
+            if name in {'uid', 'pass'} or not name:
+                continue
+            filtered_cookies.append({
+                'name': name,
+                'value': cookie.get('value', ''),
+                'domain': cookie.get('domain', '.iptorrents.com'),
+                'path': cookie.get('path', '/'),
+                'expires': int(cookie.get('expires', time.time() + 86400))
+            })
+        config['cachedCookies'] = filtered_cookies
+
+    if data.get('userAgent'):
+        config['solverUserAgent'] = data['userAgent']
+
+    raw_torrents = data.get('torrents', [])
+    normalized = []
+    for item in raw_torrents:
+        if not isinstance(item, dict):
+            continue
+        normalized.append({
+            'name': item.get('name') or item.get('title'),
+            'link': item.get('link') or item.get('download_url'),
+            'size': item.get('size'),
+            'seeders': item.get('seeders', 0),
+            'leechers': item.get('leechers', 0),
+            'added': item.get('addedRaw') or item.get('added'),
+            'isNew': item.get('isNew', False)
+        })
+
+    data['torrents'] = normalized
+    os.makedirs(os.path.dirname(results_path), exist_ok=True)
+    with open(results_path, 'w') as handle:
+        json.dump(data, handle, indent=2)
+
+    config['lastUpdateTime'] = data.get('fetchedAt')
+    _save_ipt_config(config)
+    _set_iptorrents_status('connected', f'Fetched {len(normalized)} torrents')
+    return normalized[:limit]
+
+
+def _load_recent_ipt_results(config: dict, limit: int = 10) -> list[dict]:
+    results_path = config.get('resultsPath') or os.path.join(_iptscanner_storage_dir(), 'data', 'latest_results.json')
+    if not os.path.exists(results_path):
+        return []
+
+    try:
+        with open(results_path, 'r') as handle:
+            stored = json.load(handle)
+    except Exception as exc:
+        app.logger.error(f"Failed to load cached IPT results: {exc}")
+        return []
+
+    torrents = stored.get('torrents', [])
+    if not isinstance(torrents, list):
+        return []
+
+    return [item for item in torrents[:limit] if isinstance(item, dict)]
+
+
+def _perform_ipt_login_test(config: dict) -> tuple[bool, str]:
+    try:
+        torrents = _fetch_ipt_results(config, limit=5, force=True)
+        if torrents:
+            return True, f'Login successful. Found {len(torrents)} torrents.'
+        return True, 'Login successful, but no torrents matched the search term.'
+    except Exception as exc:
+        _set_iptorrents_status('disconnected', str(exc))
+        return False, str(exc)
+
+
+def _test_plex_settings(plex_url: str, plex_token: str, library_name: str) -> int:
+    """Validate Plex credentials and return the movie count."""
+    if not plex_url or not plex_token or not library_name:
+        raise ValueError("Plex URL, token, and library name are required.")
+
+    plex_url = _validate_and_normalize_plex_url(plex_url)
+    plex = PlexServer(plex_url, plex_token)
+    movies_section = plex.library.section(library_name)
+    return len(movies_section.all())
 
 
 def _validate_and_normalize_plex_url(raw_url: str) -> str:
@@ -930,22 +1439,7 @@ def add_cache_headers(response):
 
 @app.route('/')
 def index():
-    # Pass initial values from stored results and setup status
-    initial_data = {
-        'total': app.config['LAST_SCAN_RESULTS']['total'],
-        'dv_count': app.config['LAST_SCAN_RESULTS']['dv_count'],
-        'p7_count': app.config['LAST_SCAN_RESULTS']['p7_count'],
-        'atmos_count': app.config['LAST_SCAN_RESULTS']['atmos_count']
-    }
-    setup_completed = app.config['SETUP_COMPLETED']
-    log.info(f"Rendering index template with setup_completed={setup_completed}")
-    cache_buster = int(time.time())
-    return render_template(
-        'index.html',
-        initial_data=initial_data,
-        setup_completed=setup_completed,
-        cache_buster=cache_buster
-    )
+    return redirect(url_for('dashboard'))
 
 @app.route('/api/status')
 def api_status():
@@ -1033,10 +1527,21 @@ def test_connection():
         if not plex_url or not plex_token or not library_name:
             return jsonify({'success': False, 'error': 'Missing required fields'})
 
-        plex_url = _validate_and_normalize_plex_url(plex_url)
+        plex_url = _validate_and_normalize_plex_url(plex_url.strip())
+        plex_token = plex_token.strip()
+        library_name = library_name.strip()
+
         plex = PlexServer(plex_url, plex_token)
         movies_section = plex.library.section(library_name)
         movie_count = len(movies_section.all())
+
+        # Persist the validated credentials so the dashboard immediately benefits.
+        app.config['PLEX_URL'] = plex_url
+        app.config['PLEX_TOKEN'] = plex_token
+        app.config['LIBRARY_NAME'] = library_name
+        app.config['SETUP_COMPLETED'] = True
+        if not save_settings():
+            log.warning("Plex test succeeded but saving settings failed.")
         
         return jsonify({'success': True, 'movie_count': movie_count})
     except ValueError as err:
@@ -1085,62 +1590,25 @@ def test_telegram():
 
 @app.route('/api/scan', methods=['POST'])
 def start_scan():
-    with state.lock:
-        if state.is_scanning:
-            return jsonify({'error': 'Scan already in progress'}), 400
-    
     operation = request.json.get('operation', 'scan')
-    if operation not in ['scan', 'verify']:
-        return jsonify({'error': 'Invalid operation'}), 400
-        
-    try:
-        # Initialize the scanner synchronously first
-        if not state.scanner_obj:
-            state.scanner_obj = initialize_scanner()
-            
-        if not state.scanner_obj:
-            return jsonify({'error': 'Failed to initialize scanner'}), 500
-            
-        # Start the scan in a background thread
-        if operation == 'scan':
-            thread = threading.Thread(target=run_scan_thread)
-        else:  # verify
-            thread = threading.Thread(target=run_verify_thread)
-            
-        thread.daemon = True
-        thread.start()
-        
+    success, message = _trigger_scan_operation(operation)
+    if success:
         return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    status = 500
+    if message:
+        lowered = message.lower()
+        if 'invalid' in lowered or 'progress' in lowered or 'cannot' in lowered:
+            status = 400
+    return jsonify({'error': message or 'Failed to start scan'}), status
 
 @app.route('/api/monitor', methods=['POST'])
 def toggle_monitor():
     action = request.json.get('action')
-    
-    with state.lock:
-        is_scanning = state.is_scanning
-        is_monitoring = state.monitor_active
-    
-    if action == 'start' and not is_monitoring:
-        if is_scanning:
-            return jsonify({'error': 'Scan already in progress'}), 400
-            
-        with state.lock:
-            state.monitor_active = True
-            
-        monitor_thread = threading.Thread(target=run_monitor)
-        monitor_thread.daemon = True
-        monitor_thread.start()
-        
-        return jsonify({'success': True, 'status': 'started'})
-    elif action == 'stop' and is_monitoring:
-        with state.lock:
-            state.monitor_active = False
-            
-        return jsonify({'success': True, 'status': 'stopping'})
-        
-    return jsonify({'error': 'Invalid action or state'}), 400
+    success, message = _toggle_monitor_action(action)
+    if success:
+        status = 'started' if action == 'start' else 'stopped'
+        return jsonify({'success': True, 'status': status})
+    return jsonify({'error': message or 'Invalid action or state'}), 400
 
 @app.route('/api/collection/p7movies')
 def get_p7_movies():
@@ -1257,23 +1725,18 @@ def get_atmos_movies():
 
 @app.route('/api/reports')
 def list_reports():
-    reports = []
     full_reports = request.args.get('full', 'false').lower() == 'true'
     
-    try:
-        for filename in os.listdir(app.config['REPORTS_FOLDER_PATH']):
-            if filename.endswith('.csv') or filename.endswith('.json'):
-                file_path = os.path.join(app.config['REPORTS_FOLDER_PATH'], filename)
-                reports.append({
-                    'filename': filename,
-                    'date': datetime.fromtimestamp(os.path.getmtime(file_path)).isoformat(),
-                    'size': os.path.getsize(file_path)
-                })
-    except Exception as e:
-        log.error(f"Error listing reports: {e}")
-        
-    sorted_reports = sorted(reports, key=lambda x: x['date'], reverse=True)
-    return jsonify(sorted_reports if full_reports else sorted_reports[:5])
+    reports = _list_reports()
+    serialised = [
+        {
+            'filename': item['filename'],
+            'date': item['date'].isoformat(),
+            'size': item['size']
+        }
+        for item in reports
+    ]
+    return jsonify(serialised if full_reports else serialised[:5])
 
 @app.route('/api/reports/<filename>')
 def download_report(filename):
@@ -1482,379 +1945,103 @@ def reset_settings():
 @app.route('/api/iptscanner/settings', methods=['GET', 'POST'])
 def iptscanner_settings():
     try:
-        storage_dir = _iptscanner_storage_dir()
-        config_path = _iptscanner_config_path()
-        cookies_path = _iptscanner_cookies_path()
-        data_path = _iptscanner_known_torrents_path()
-        profile_dir = _iptscanner_profile_dir()
-
-        # Default config
-        default_config = {
-            "iptorrents": {
-                "url": "https://iptorrents.com/login",
-                "searchUrl": "https://iptorrents.com/t?q=BL%2BEL%2BRPU&qf=adv#torrents",
-                "searchTerm": "BL+EL+RPU",
-                "cookiePath": cookies_path
-            },
-            "telegram": {
-                "enabled": False,
-                "botToken": "",
-                "chatId": ""
-            },
-            "checkInterval": "0 */2 * * *",
-            "dataPath": data_path,
-            "configPath": config_path,
-            "cookiesPath": cookies_path,
-            "headless": True,
-            "debug": False,
-            "loginComplete": False,
-            "userDataDir": profile_dir,
-            "lastUpdateTime": None
-        }
-        
-        # Ensure the config file exists
-        if not os.path.exists(config_path):
-            with open(config_path, 'w') as f:
-                json.dump(default_config, f, indent=4)
-        else:
-            # Align existing config paths with storage directory
-            try:
-                with open(config_path, 'r') as f:
-                    existing_config = json.load(f)
-                paths_updated = False
-                if existing_config.get("dataPath") != data_path:
-                    existing_config["dataPath"] = data_path
-                    paths_updated = True
-                if existing_config.get("configPath") != config_path:
-                    existing_config["configPath"] = config_path
-                    paths_updated = True
-                if existing_config.get("cookiesPath") != cookies_path:
-                    existing_config["cookiesPath"] = cookies_path
-                    paths_updated = True
-                if existing_config.get("userDataDir") != profile_dir:
-                    existing_config["userDataDir"] = profile_dir
-                    paths_updated = True
-                iptor = existing_config.setdefault("iptorrents", {})
-                if iptor.get("cookiePath") != cookies_path:
-                    iptor["cookiePath"] = cookies_path
-                    paths_updated = True
-                if paths_updated:
-                    with open(config_path, 'w') as f:
-                        json.dump(existing_config, f, indent=4)
-            except Exception as path_exc:
-                app.logger.warning(f"Unable to normalise IPTScanner config paths: {path_exc}")
-        
+        config = _load_ipt_config()
         if request.method == 'GET':
-            # Read and return current settings
+            cookies_cfg = config.get('cookies', {})
+            has_cookies = bool(cookies_cfg.get('uid') and cookies_cfg.get('pass'))
+            response_payload = {
+                'search_term': config.get('searchTerm', ''),
+                'searchTerm': config.get('searchTerm', ''),
+                'check_interval': config.get('checkInterval', '0 */2 * * *'),
+                'checkInterval': config.get('checkInterval', '0 */2 * * *'),
+                'solver_url': config.get('solverUrl', 'http://localhost:8191'),
+                'solverUrl': config.get('solverUrl', 'http://localhost:8191'),
+                'solver_timeout': config.get('solverTimeout', 60000),
+                'solverTimeout': config.get('solverTimeout', 60000),
+                'enabled': config.get('enabled', True),
+                'debug': config.get('debug', False),
+                'has_cookies': has_cookies,
+                'hasCookies': has_cookies,
+                'last_update_time': config.get('lastUpdateTime'),
+                'lastUpdateTime': config.get('lastUpdateTime')
+            }
+            return jsonify(response_payload)
+
+        payload = request.get_json(silent=True) or {}
+
+        if 'search_term' in payload and isinstance(payload['search_term'], str):
+            config['searchTerm'] = payload['search_term'].strip()
+        if 'searchTerm' in payload and isinstance(payload['searchTerm'], str):
+            config['searchTerm'] = payload['searchTerm'].strip()
+        if 'check_interval' in payload and isinstance(payload['check_interval'], str):
+            config['checkInterval'] = payload['check_interval'].strip()
+        if 'checkInterval' in payload and isinstance(payload['checkInterval'], str):
+            config['checkInterval'] = payload['checkInterval'].strip()
+
+        cookies_cfg = config.setdefault('cookies', {})
+        if 'uid' in payload:
+            cookies_cfg['uid'] = payload['uid'].strip()
+        if 'pass' in payload:
+            cookies_cfg['pass'] = payload['pass'].strip()
+
+        enabled_value = payload.get('enabled')
+        if enabled_value is not None:
+            if isinstance(enabled_value, str):
+                config['enabled'] = enabled_value.strip().lower() in {'1', 'true', 'yes', 'on'}
+            else:
+                config['enabled'] = bool(enabled_value)
+
+        solver_url = payload.get('solver_url') or payload.get('solverUrl')
+        if isinstance(solver_url, str) and solver_url.strip():
+            config['solverUrl'] = solver_url.strip()
+
+        solver_timeout = payload.get('solver_timeout', payload.get('solverTimeout'))
+        if solver_timeout is not None:
             try:
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
+                timeout_int = int(solver_timeout)
+                if timeout_int <= 0:
+                    raise ValueError
+                config['solverTimeout'] = timeout_int
+            except (TypeError, ValueError):
+                return jsonify({'success': False, 'error': 'solver_timeout must be a positive integer milliseconds'}), 400
+
+        if 'debug' in payload:
+            config['debug'] = bool(payload['debug'])
+
+        saved = _save_ipt_config(config)
+        if saved:
+            schedule_ipt_scanner(config)
+        return jsonify({'success': saved})
+    except Exception as exc:
+        app.logger.error(f"Error updating IPT settings: {exc}")
+        return jsonify({'success': False, 'error': str(exc)}), 500
                 
-                # Convert to more readable format for the frontend
-                frontend_config = {
-                    "enabled": True,
-                    "searchTerm": config["iptorrents"]["searchTerm"],
-                    "checkInterval": config["checkInterval"],
-                    "headless": config["headless"],
-                    "debug": config["debug"],
-                    "uid": config.get("uid", ""),
-                    "pass": config.get("pass", "")
-                }
-                
-                return jsonify(frontend_config)
-            except Exception as e:
-                app.logger.error(f"Error reading IPTScanner config: {str(e)}")
-                # Return a simplified default if we can't read the file
-                return jsonify({
-                    "enabled": True,
-                    "searchTerm": "BL+EL+RPU",
-                    "checkInterval": "0 */2 * * *",
-                    "headless": True,
-                    "debug": False,
-                    "uid": "",
-                    "pass": ""
-                })
-        else:  # POST
-            # Update settings
-            new_config = request.get_json()
-            
-            try:
-                # Read existing config
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-                
-                # Map frontend settings to JS config format
-                if "searchTerm" in new_config:
-                    config["iptorrents"]["searchTerm"] = new_config["searchTerm"]
-                    config["iptorrents"]["searchUrl"] = f"https://iptorrents.com/t?q={new_config['searchTerm']}&qf=adv#torrents"
-                
-                if "checkInterval" in new_config:
-                    # If the value for checkInterval is a key (like '2hour'), convert it to cron
-                    if new_config['checkInterval'] in ['15min', '30min', '1hour', '2hour', '6hour', '12hour', '1day']:
-                        cron_map = {
-                            '15min': '*/15 * * * *',
-                            '30min': '*/30 * * * *',
-                            '1hour': '0 */1 * * *',
-                            '2hour': '0 */2 * * *',
-                            '6hour': '0 */6 * * *',
-                            '12hour': '0 */12 * * *',
-                            '1day': '0 0 * * *'
-                        }
-                        config["checkInterval"] = cron_map.get(new_config['checkInterval'], '0 */2 * * *')
-                    else:
-                        config["checkInterval"] = new_config["checkInterval"]
-                
-                if "headless" in new_config:
-                    config["headless"] = new_config["headless"]
-                
-                if "debug" in new_config:
-                    config["debug"] = new_config["debug"]
-                
-                # Only save non-empty credentials
-                if "uid" in new_config and "pass" in new_config:
-                    if new_config["uid"] and new_config["pass"]:
-                        config["uid"] = new_config["uid"]
-                        config["pass"] = new_config["pass"]
-                        
-                        # Also update cookies.json
-                        cookies = [
-                            {
-                                "name": "uid",
-                                "value": new_config["uid"],
-                                "domain": ".iptorrents.com",
-                                "path": "/",
-                                "expires": int(datetime.now().timestamp() + 86400 * 30)
-                            },
-                            {
-                                "name": "pass",
-                                "value": new_config["pass"],
-                                "domain": ".iptorrents.com",
-                                "path": "/",
-                                "expires": int(datetime.now().timestamp() + 86400 * 30)
-                            }
-                        ]
-                        
-                        with open(cookies_path, 'w') as f:
-                            json.dump(cookies, f)
-                            app.logger.info(f"Updated cookies")
-                    else:
-                        # If values are empty, clear login flag but keep cookie path aligned
-                        config.pop("uid", None)
-                        config.pop("pass", None)
-                        config["loginComplete"] = False
-                else:
-                    config.setdefault("iptorrents", {})["cookiePath"] = cookies_path
-                
-                # Update Radarr settings if provided
-                if "radarr" in new_config:
-                    config["radarr"] = new_config["radarr"]
-                
-                # Ensure critical paths stay aligned with storage directory
-                config["dataPath"] = data_path
-                config["configPath"] = config_path
-                config["cookiesPath"] = cookies_path
-                config["userDataDir"] = profile_dir
-                config.setdefault("iptorrents", {})["cookiePath"] = cookies_path
-                
-                # Write back the updated config
-                with open(config_path, 'w') as f:
-                    json.dump(config, f, indent=4)
-                
-                app.logger.info(f"Updated IPTScanner config")
-                
-                # Update the schedule
-                schedule_ipt_scanner(config)
-                
-                return jsonify({"success": True})
-            except Exception as e:
-                app.logger.error(f"Error updating IPTScanner config: {str(e)}")
-                return jsonify({"success": False, "error": str(e)}), 500
-    except Exception as e:
-        app.logger.error(f"IPTScanner settings endpoint error: {str(e)}")
-        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/iptscanner/torrents', methods=['GET'])
 def iptscanner_torrents():
     try:
-        # If the check_only parameter is set, just check if cookies exist
-        check_only = request.args.get('check_only', 'false').lower() == 'true'
-        
-        # Use persistent IPT scanner storage
-        cookies_file = _iptscanner_cookies_path()
-        
-        # Check if cookies file exists
-        if not os.path.exists(cookies_file):
-            return jsonify({'error': 'No cookies file found. Please add your IPTorrents cookies.'})
-        
-        # If check_only is true, just return success
-        if check_only:
-            return jsonify({'success': True, 'message': 'Cookies file exists'})
-        
-        # Rest of the function logic to get torrents
+        config = _load_ipt_config()
         refresh = request.args.get('refresh', 'false').lower() == 'true'
-        
+
         if refresh:
-            app.logger.info("Force refresh requested for IPTorrents data")
-            # Run the JS script to get fresh data
-            iptscanner_dir = _iptscanner_script_dir()
-            js_script = os.path.join(iptscanner_dir, 'monitor-iptorrents.js')
-            cmd = ['node', js_script, '--one-time']
-            
-            try:
-                app.logger.info(f"Running command: {' '.join(cmd)}")
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    encoding='utf-8',
-                    errors='replace',
-                    text=True,
-                    cwd=iptscanner_dir
-                )
-                
-                stdout, stderr = process.communicate()
-                
-                if stdout:
-                    app.logger.info(f"Refresh stdout: {stdout[:200]}...")
-                if stderr:
-                    app.logger.error(f"Refresh stderr: {stderr[:200]}...")
-                    
-                app.logger.info("Refresh completed")
-                
-                # Update lastUpdateTime in config file
-                config_path = _iptscanner_config_path()
-                if os.path.exists(config_path):
-                    try:
-                        with open(config_path, 'r') as f:
-                            config = json.load(f)
-                        config['lastUpdateTime'] = datetime.now().isoformat()
-                        with open(config_path, 'w') as f:
-                            json.dump(config, f, indent=4)
-                    except Exception as e:
-                        app.logger.error(f"Error updating config after refresh: {str(e)}")
-            except Exception as e:
-                app.logger.error(f"Error during refresh: {str(e)}")
-        
-        storage_dir = _iptscanner_storage_dir()
-        primary_data_path = _iptscanner_known_torrents_path()
-        legacy_js_data_path = os.path.join(_iptscanner_script_dir(), 'known_torrents.json')
-        app_data_dir = os.path.join(storage_dir, 'data')
-        os.makedirs(app_data_dir, exist_ok=True)
-        app_data_path = os.path.join(app_data_dir, 'torrents.json')
-        config_path = _iptscanner_config_path()
-        last_check = None
-        search_term = "BL+EL+RPU"
-        
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-                last_check = config.get('lastUpdateTime')
-                search_term = config.get('iptorrents', {}).get('searchTerm', search_term)
-                
-                # If no lastUpdateTime in config, set it now
-                if not last_check:
-                    config['lastUpdateTime'] = datetime.now().isoformat()
-                    last_check = config['lastUpdateTime']
-                    with open(config_path, 'w') as f:
-                        json.dump(config, f, indent=4)
-            except Exception as e:
-                app.logger.error(f"Error reading config for torrents: {str(e)}")
-        
-        torrents = []
-        
-        # First try the shared storage data written by the worker
-        if os.path.exists(primary_data_path):
-            try:
-                with open(primary_data_path, 'r') as f:
-                    js_data = json.load(f)
-                    if isinstance(js_data, list):
-                        torrents = js_data
-                    else:
-                        # If it's just the known torrent IDs, we need to handle differently
-                        torrents = []
-                app.logger.info(f"Loaded {len(torrents)} torrents from shared IPT scanner data")
-            except Exception as e:
-                app.logger.error(f"Error reading shared IPT scanner data: {str(e)}")
-        
-        # Fall back to the legacy script output file if needed
-        if not torrents and os.path.exists(legacy_js_data_path):
-            try:
-                with open(legacy_js_data_path, 'r') as f:
-                    js_data = json.load(f)
-                    if isinstance(js_data, list):
-                        torrents = js_data
-                    else:
-                        torrents = js_data.get('torrents') or []
-                app.logger.info(f"Loaded {len(torrents)} torrents from legacy JavaScript output file")
-            except Exception as e:
-                app.logger.error(f"Error reading legacy JavaScript torrents file: {str(e)}")
-        
-        # If that fails, try our app's data directory
-        if not torrents and os.path.exists(app_data_path):
-            try:
-                with open(app_data_path, 'r') as f:
-                    torrents = json.load(f)
-                app.logger.info(f"Loaded {len(torrents)} torrents from app data directory")
-            except Exception as e:
-                app.logger.error(f"Error reading app torrents file: {str(e)}")
-        
-        # If we still have no torrents, return empty list
-        if not torrents:
-            app.logger.warning("No torrents found in either location")
-            return jsonify({
-                "torrents": [],
-                "lastCheck": last_check,
-                "searchTerm": search_term
-            })
-        
-        # If torrents is a List, sort and return it
-        if isinstance(torrents, list):
-            # Parse time strings to ensure correct sorting
-            for torrent in torrents:
-                # Get added text and convert to a timestamp for sorting
-                added_text = torrent.get('added', '')
-                
-                # Set a default sort time if none exists
-                if 'sortTime' not in torrent:
-                    # Parse the time string
-                    if 'min ago' in added_text:
-                        mins = float(added_text.split(' ')[0])
-                        torrent['sortTime'] = time.time() - (mins * 60)
-                    elif 'hr ago' in added_text:
-                        hours = float(added_text.split(' ')[0])
-                        torrent['sortTime'] = time.time() - (hours * 3600)
-                    elif 'day ago' in added_text:
-                        days = float(added_text.split(' ')[0])
-                        torrent['sortTime'] = time.time() - (days * 86400)
-                    elif 'wk ago' in added_text:
-                        weeks = float(added_text.split(' ')[0])
-                        torrent['sortTime'] = time.time() - (weeks * 604800)
-                    else:
-                        torrent['sortTime'] = 0
-            
-            # Sort torrents by isNew and then by added date
-            sorted_torrents = sorted(
-                torrents, 
-                key=lambda t: (0 if t.get('isNew', False) else 1, -(t.get('sortTime', 0) or 0)),
-                reverse=False  # Don't reverse since we're using negative sortTime
-            )
-            
-            return jsonify({
-                "torrents": sorted_torrents,
-                "lastCheck": last_check,
-                "searchTerm": search_term
-            })
-        
-        # If we get here, the format is unexpected - just return it as-is
-        app.logger.warning(f"Unexpected torrents format: {type(torrents)}")
+            torrents = _fetch_ipt_results(config, force=True)
+        else:
+            torrents = _load_recent_ipt_results(config)
+            if not torrents:
+                torrents = _fetch_ipt_results(config, force=True)
+
         return jsonify({
-            "torrents": torrents,
-            "lastCheck": last_check,
-            "searchTerm": search_term
+            'torrents': torrents,
+            'searchTerm': config.get('searchTerm', ''),
+            'lastCheck': config.get('lastUpdateTime')
         })
+    except ValueError as exc:
+        _set_iptorrents_status('disconnected', str(exc))
+        return jsonify({'error': str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({'error': str(exc)}), 500
     except Exception as e:
-        app.logger.error(f"Error getting IPTScanner torrents: {str(e)}")
+        app.logger.error(f"Error getting IPTorrents results: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/iptscanner/test-login', methods=['POST'])
@@ -1863,228 +2050,21 @@ def test_ipt_login():
         data = request.get_json()
         if not data:
             return jsonify({'success': False, 'error': 'No data provided'}), 400
-        
-        uid = data.get('uid')
-        passkey = data.get('passkey', data.get('pass'))
-        
-        if not uid or not passkey:
-            return jsonify({'success': False, 'error': 'UID and passkey are required'}), 400
 
-        storage_dir = _iptscanner_storage_dir()
-        cookies_path = _iptscanner_cookies_path()
-        config_path = _iptscanner_config_path()
-        
-        # Create cookies in proper format for puppeteer
-        cookies = [
-            {
-                "name": "uid",
-                "value": uid,
-                "domain": ".iptorrents.com",
-                "path": "/",
-                "expires": int(datetime.now().timestamp() + 86400 * 30)
-            },
-            {
-                "name": "pass",
-                "value": passkey,
-                "domain": ".iptorrents.com",
-                "path": "/",
-                "expires": int(datetime.now().timestamp() + 86400 * 30)
-            }
-        ]
-        
-        app.logger.info(f"Saving cookies to {cookies_path}")
-        
-        with open(cookies_path, 'w') as f:
-            json.dump(cookies, f, indent=4)
-        
-        # Update the config.json file as well
-        default_config = {
-            "iptorrents": {
-                "url": "https://iptorrents.com/login",
-                "searchUrl": "https://iptorrents.com/t?q=BL%2BEL%2BRPU&qf=adv#torrents",
-                "searchTerm": "BL+EL+RPU",
-                "cookiePath": cookies_path
-            },
-            "telegram": {
-                "enabled": False,
-                "botToken": "",
-                "chatId": ""
-            },
-            "checkInterval": "0 */2 * * *",
-            "dataPath": _iptscanner_known_torrents_path(),
-            "configPath": config_path,
-            "cookiesPath": cookies_path,
-            "userDataDir": _iptscanner_profile_dir(),
-            "loginComplete": True,
-            "uid": uid,
-            "pass": passkey
-        }
+        config = _load_ipt_config()
+        if 'searchTerm' in data:
+            config['searchTerm'] = data['searchTerm'].strip()
 
-        try:
-            if os.path.exists(config_path):
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-            else:
-                config = default_config
-        except Exception as e:
-            app.logger.error(f"Error reading existing config: {str(e)}")
-            config = default_config
+        cookies_cfg = config.setdefault('cookies', {})
+        if data.get('uid'):
+            cookies_cfg['uid'] = data['uid'].strip()
+        if data.get('pass'):
+            cookies_cfg['pass'] = data['pass'].strip()
 
-        ipt_section = config.setdefault('iptorrents', {})
-        ipt_section.setdefault('url', default_config['iptorrents']['url'])
-        search_term = ipt_section.setdefault('searchTerm', default_config['iptorrents']['searchTerm'])
-        ipt_section['searchUrl'] = f"https://iptorrents.com/t?q={search_term}&qf=adv#torrents"
-        ipt_section['cookiePath'] = cookies_path
-
-        config['uid'] = uid
-        config['pass'] = passkey
-        config['loginComplete'] = True
-        config['cookiesPath'] = cookies_path
-        config['dataPath'] = _iptscanner_known_torrents_path()
-        config['configPath'] = config_path
-        config['userDataDir'] = _iptscanner_profile_dir()
-
-        with open(config_path, 'w') as f:
-            json.dump(config, f, indent=4)
-            app.logger.info("Updated config with credentials")
-        
-        # Run the JS login test script path
-        script_dir = _iptscanner_script_dir()
-        js_script = os.path.join(script_dir, 'login-test.js')
-        
-        # Create a simple test script if it doesn't exist
-        if not os.path.exists(js_script):
-            app.logger.info("Creating login test script")
-            test_script = """
-const fs = require('fs');
-const puppeteer = require('puppeteer');
-
-// Check if cookie path was provided
-const cookiePath = process.argv[2];
-if (!cookiePath) {
-    console.error('DEBUG: No cookie path provided');
-    process.exit(1);
-}
-
-console.error('DEBUG: Script started');
-console.error('DEBUG: Starting login test...');
-console.error('DEBUG: Loading cookies from: ' + cookiePath);
-
-// Load cookies
-if (!fs.existsSync(cookiePath)) {
-    console.error('DEBUG: Cookies file not found at: ' + cookiePath);
-    // Try alternative paths
-    const altPath1 = cookiePath.replace('/data/', '/app/');
-    const altPath2 = cookiePath.replace('/app/', '/data/');
-    
-    console.error('DEBUG: Trying alternative path: ' + altPath1);
-    if (fs.existsSync(altPath1)) {
-        console.error('DEBUG: Found cookies at alternative path: ' + altPath1);
-        cookiePath = altPath1;
-    } else {
-        console.error('DEBUG: Trying alternative path: ' + altPath2);
-        if (fs.existsSync(altPath2)) {
-            console.error('DEBUG: Found cookies at alternative path: ' + altPath2);
-            cookiePath = altPath2;
-        } else {
-            console.error('DEBUG: Cookies file not found at any path');
-            console.log(JSON.stringify({ success: false, error: 'Cookies file not found' }));
-            process.exit(1);
-        }
-    }
-}
-
-const cookies = JSON.parse(fs.readFileSync(cookiePath, 'utf8'));
-console.error('DEBUG: Loaded ' + cookies.length + ' cookies');
-
-async function testLogin() {
-    let browser;
-    try {
-        // Launch headless browser
-        browser = await puppeteer.launch({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-        
-        const page = await browser.newPage();
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36');
-        
-        // Go to IPTorrents and set cookies
-        await page.goto('https://iptorrents.com');
-        await page.setCookie(...cookies);
-        
-        // Navigate to the site and check if we're logged in
-        await page.goto('https://iptorrents.com/t');
-        
-        // Check for login status by looking for user menu or logout link
-        const userMenu = await page.$('a[href*="/u/"]') || await page.$('a.logout');
-        const isLoggedIn = !!userMenu;
-        
-        console.log(JSON.stringify({ success: isLoggedIn }));
-        await browser.close();
-    } catch (err) {
-        console.error('Error during login test:', err.message);
-        if (browser) await browser.close();
-        console.log(JSON.stringify({ success: false, error: err.message }));
-        process.exit(1);
-    }
-}
-
-testLogin();
-"""
-            with open(js_script, 'w') as f:
-                f.write(test_script)
-        
-        app.logger.info(f"Running login test with Node.js using cookies at {cookies_path}")
-        
-        # Check if node_modules are installed
-        node_modules = os.path.join(script_dir, 'node_modules')
-        if not os.path.exists(node_modules):
-            app.logger.warning("Node modules not installed, attempting to install puppeteer")
-            try:
-                subprocess.run(['npm', 'install', 'puppeteer', '--no-save'], cwd=script_dir, check=True)
-            except Exception as e:
-                app.logger.error(f"Failed to install puppeteer: {str(e)}")
-                return jsonify({'success': False, 'error': f"Failed to install required dependencies: {str(e)}"}), 500
-        
-        # Run the test script
-        try:
-            process = subprocess.run(
-                ['node', js_script, cookies_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=script_dir,
-                timeout=60
-            )
-            
-            # Log the output for debugging
-            app.logger.info(f"Test login stdout: {process.stdout}")
-            app.logger.info(f"Test login stderr: {process.stderr}")
-            
-            if process.returncode != 0:
-                app.logger.error(f"Login test failed with return code {process.returncode}")
-                return jsonify({'success': False, 'error': 'Login test script failed'}), 500
-            
-            # Parse the result from stdout
-            try:
-                result = json.loads(process.stdout.strip())
-                if result.get('success'):
-                    return jsonify({'success': True, 'message': 'Login successful! Cookies have been saved.'})
-                else:
-                    error_msg = result.get('error', 'Invalid credentials or site error')
-                    return jsonify({'success': False, 'error': f'Login failed: {error_msg}'})
-            except json.JSONDecodeError:
-                app.logger.error(f"Failed to parse test login result: {process.stdout}")
-                return jsonify({'success': False, 'error': 'Invalid response from login test'}), 500
-                
-        except subprocess.TimeoutExpired:
-            app.logger.error("Login test timed out after 60 seconds")
-            return jsonify({'success': False, 'error': 'Login test timed out'}), 500
-        except Exception as e:
-            app.logger.error(f"Error running login test: {str(e)}")
-            return jsonify({'success': False, 'error': f'Error running login test: {str(e)}'}), 500
-            
+        success, message = _perform_ipt_login_test(config)
+        if success:
+            return jsonify({'success': True, 'message': message})
+        return jsonify({'success': False, 'error': message}), 400
     except Exception as e:
         app.logger.error(f"Error in test_ipt_login: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -2093,7 +2073,6 @@ testLogin();
 def schedule_ipt_scanner(config):
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
-        from apscheduler.triggers.interval import IntervalTrigger
         import pytz
         
         global scheduler
@@ -2114,199 +2093,396 @@ def schedule_ipt_scanner(config):
             if job.id == 'iptscanner':
                 scheduler.remove_job(job.id)
                 app.logger.info("Removed existing IPTScanner job")
-        
-        # Add new job if enabled
-        if config.get('enabled', True):
-            # Convert cron expression to interval hours for simplicity
-            interval_hours = 2  # Default 2 hours
-            
-            cron_expr = config.get('checkInterval', '0 */2 * * *')
-            if '*/1' in cron_expr:
-                interval_hours = 1
-            elif '*/2' in cron_expr:
-                interval_hours = 2
-            elif '*/6' in cron_expr:
-                interval_hours = 6
-            elif '*/12' in cron_expr:
-                interval_hours = 12
-            elif '0 0' in cron_expr:  # Daily at midnight
-                interval_hours = 24
-            
-            app.logger.info(f"Setting IPTScanner interval to {interval_hours} hours")
-            
-            # Add job with interval trigger instead of cron
-            scheduler.add_job(
-                func=run_ipt_scanner,
-                args=[config],
-                trigger='interval',
-                hours=interval_hours,
-                id='iptscanner',
-                replace_existing=True
-            )
-            
-            # Run immediately if debug is enabled
-            if config.get('debug', False):
-                app.logger.info("Debug mode enabled, running IPTScanner immediately")
-                run_ipt_scanner(config)
-            
-            app.logger.info(f"IPTScanner scheduled to run every {interval_hours} hours")
+
+        if not config.get('enabled', True):
+            app.logger.info("IPTScanner disabled; skipping job scheduling")
+            return
+
+        interval_hours = 2  # Default 2 hours
+        cron_expr = config.get('checkInterval', '0 */2 * * *')
+        if '*/1' in cron_expr:
+            interval_hours = 1
+        elif '*/6' in cron_expr:
+            interval_hours = 6
+        elif '*/12' in cron_expr:
+            interval_hours = 12
+        elif '0 0' in cron_expr:  # Daily at midnight
+            interval_hours = 24
+
+        app.logger.info(f"Setting IPTScanner interval to {interval_hours} hours")
+
+        scheduler.add_job(
+            func=run_ipt_scanner,
+            trigger='interval',
+            hours=interval_hours,
+            id='iptscanner',
+            replace_existing=True
+        )
+        app.logger.info(f"IPTScanner scheduled to run every {interval_hours} hours")
     except Exception as e:
         app.logger.error(f"Error initializing scheduler: {str(e)}")
 
 def run_ipt_scanner(config=None):
-    """Run the IPT scanner with the provided configuration"""
+    """Fetch the latest results from Prowlarr and store them for later viewing."""
     try:
-        app.logger.info("Running IPT scanner...")
-        
-        # Resolve storage and script locations
+        cfg = config or _load_ipt_config()
+        results = _fetch_prowlarr_results(cfg)
+
         storage_dir = _iptscanner_storage_dir()
-        script_dir = _iptscanner_script_dir()
-        script_path = os.path.join(script_dir, 'monitor-iptorrents.js')
-        
-        app.logger.info(f"Script directory: {script_dir}")
-        app.logger.info(f"Script path: {script_path}")
-        app.logger.info(f"Storage directory: {storage_dir}")
-        
-        # Check if the script exists
-        if not os.path.exists(script_path):
-            app.logger.error(f"IPT scanner script not found at {script_path}")
-            return False
-        
-        # Check and log cookie file existence
-        cookies_path = _iptscanner_cookies_path()
-        app.logger.info(f"Cookies path: {cookies_path}, exists: {os.path.exists(cookies_path)}")
-        
-        if os.path.exists(cookies_path):
-            try:
-                with open(cookies_path, 'r') as f:
-                    cookies_content = f.read()
-                app.logger.info(f"Cookies file content length: {len(cookies_content)} bytes")
-            except Exception as e:
-                app.logger.error(f"Error reading cookies file: {str(e)}")
-        
-        # Run the script
-        try:
-            # Prepare the command
-            cmd = ['node', script_path, '--one-time']
-            
-            # Add the config path if provided
-            if config:
-                config_path = _iptscanner_config_path()
-                app.logger.info(f"Writing config to: {config_path}")
-                with open(config_path, 'w') as f:
-                    json.dump(config, f, indent=4)
-                cmd.append(config_path)
-            
-            # Verify config file existence
-            config_path = _iptscanner_config_path()
-            app.logger.info(f"Config path: {config_path}, exists: {os.path.exists(config_path)}")
-            
-            if os.path.exists(config_path):
-                try:
-                    with open(config_path, 'r') as f:
-                        config_content = json.load(f)
-                    app.logger.info(f"Config file content keys: {list(config_content.keys())}")
-                except Exception as e:
-                    app.logger.error(f"Error reading config file: {str(e)}")
-            
-            app.logger.info(f"Running command: {' '.join(cmd)}")
-            
-            # Set up path for npm modules
-            env = os.environ.copy()
-            node_modules_path = os.path.join(script_dir, 'node_modules')
-            app.logger.info(f"Node modules path: {node_modules_path}, exists: {os.path.exists(node_modules_path)}")
-            
-            # Run the script and capture output
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=script_dir,
-                env=env
-            )
-            
-            # Log output in real-time
-            stdout_data = []
-            stderr_data = []
-            
-            for line in process.stdout:
-                line = line.strip()
-                if line:
-                    app.logger.info(f"IPT Scanner: {line}")
-                    stdout_data.append(line)
-            
-            # Get stderr after process completes
-            stderr = process.stderr.read()
-            if stderr:
-                for line in stderr.splitlines():
-                    if line.strip():
-                        app.logger.error(f"IPT Scanner Error: {line.strip()}")
-                        stderr_data.append(line.strip())
-            
-            # Wait for process to complete, with timeout
-            try:
-                process.wait(timeout=300)  # 5 minute timeout
-            except subprocess.TimeoutExpired:
-                app.logger.error("IPT scanner process timed out and was terminated")
-                process.kill()
-                return False
-            
-            # Check exit code
-            if process.returncode != 0:
-                app.logger.error(f"IPT scanner exited with error code {process.returncode}")
-                return False
-            else:
-                app.logger.info("IPT scanner completed successfully")
-                return True
-                
-        except Exception as e:
-            app.logger.error(f"Error executing IPT scanner: {str(e)}")
-            return False
-    
-    except Exception as e:
-        app.logger.error(f"Error in run_ipt_scanner: {str(e)}")
+        data_dir = os.path.join(storage_dir, 'data')
+        os.makedirs(data_dir, exist_ok=True)
+        app_data_path = os.path.join(data_dir, 'torrents.json')
+
+        with open(app_data_path, 'w') as handle:
+            json.dump(results, handle, indent=2)
+
+        cfg['lastUpdateTime'] = datetime.now().isoformat()
+        _save_ipt_config(cfg)
+        _set_prowlarr_status('connected', f"Cached {len(results)} results")
+        return results
+    except ValueError as exc:
+        app.logger.error(f"Prowlarr configuration error: {exc}")
         return False
+    except requests.RequestException as exc:
+        app.logger.error(f"Error fetching results from Prowlarr: {exc}")
+        return False
+    except Exception as exc:
+        app.logger.error(f"Error in run_ipt_scanner: {exc}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Basic HTML views
+# ---------------------------------------------------------------------------
+
+@app.route('/dashboard')
+def dashboard():
+    # Refresh connection statuses so the UI reflects the latest state each visit.
+    try:
+        check_plex_connection()
+    except Exception as exc:  # pragma: no cover - defensive logging
+        app.logger.debug(f"Plex status refresh failed: {exc}")
+
+    ipt_config = _load_ipt_config()
+    recent_ipt_entries = _load_recent_ipt_results(ipt_config, limit=50)
+
+    try:
+        new_24h, last_check_dt, next_check_dt = _summarize_ipt_activity(ipt_config, recent_ipt_entries)
+        cookies_cfg = ipt_config.get('cookies', {})
+        if cookies_cfg.get('uid'):
+            if last_check_dt:
+                parts = [f"Last: {_format_human_datetime(last_check_dt)}"]
+                if next_check_dt:
+                    parts.append(f"Next: {_format_human_datetime(next_check_dt)}")
+                parts.append(f"{new_24h} new / 24h")
+                _set_iptorrents_status('connected', ' | '.join(parts))
+            else:
+                _set_iptorrents_status('connected', f"{new_24h} new / 24h | Awaiting first check")
+        else:
+            _set_iptorrents_status('disconnected', 'Cookies not configured')
+    except Exception as exc:  # pragma: no cover
+        app.logger.debug(f"IPT status refresh failed: {exc}")
+
+    with state.lock:
+        scan_results = dict(state.scan_results)
+        connection_status = dict(state.connection_status)
+        is_scanning = state.is_scanning
+        monitor_active = state.monitor_active
+        last_scan_time = state.last_scan_time
+        next_scan_time = state.next_scan_time
+
+    last_scan_results = app.config.get('LAST_SCAN_RESULTS', {
+        'total': 0,
+        'dv_count': 0,
+        'p7_count': 0,
+        'atmos_count': 0
+    })
+
+    recent_reports = _list_reports(limit=5)
+    recent_ipt = recent_ipt_entries[:10]
+
+    return render_template(
+        'dashboard.html',
+        active_page='dashboard',
+        scan_results=scan_results,
+        last_scan_results=last_scan_results,
+        connection_status=connection_status,
+        is_scanning=is_scanning,
+        monitor_active=monitor_active,
+        last_scan_time=last_scan_time,
+        next_scan_time=next_scan_time,
+        plex_url=app.config.get('PLEX_URL', ''),
+        library_name=app.config.get('LIBRARY_NAME', ''),
+        recent_reports=recent_reports,
+        ipt_results=recent_ipt,
+        setup_completed=app.config.get('SETUP_COMPLETED', False)
+    )
+
+
+@app.route('/reports')
+def reports_page():
+    reports = _list_reports()
+    return render_template(
+        'reports.html',
+        active_page='reports',
+        reports=reports,
+        reports_dir=app.config.get('REPORTS_FOLDER_PATH', EXPORTS_DIR)
+    )
+
+
+@app.route('/settings', methods=['GET', 'POST'])
+def settings_page():
+    if request.method == 'POST':
+        form = request.form
+        action = form.get('action', 'save')
+        plex_url_input = form.get('plex_url', '').strip()
+        plex_token_input = form.get('plex_token', '').strip()
+        library_name_input = form.get('library_name', '').strip()
+
+        if action == 'test-plex':
+            plex_url_to_test = plex_url_input or app.config.get('PLEX_URL', '')
+            plex_token_to_test = plex_token_input or app.config.get('PLEX_TOKEN', '')
+            library_name_to_test = library_name_input or app.config.get('LIBRARY_NAME', '')
+
+            if not plex_url_to_test or not plex_token_to_test or not library_name_to_test:
+                flash('Provide Plex URL, token, and library name before testing.', 'error')
+                return redirect(url_for('settings_page'))
+
+            try:
+                movie_count = _test_plex_settings(plex_url_to_test, plex_token_to_test, library_name_to_test)
+                flash(f'Success! Connected to Plex and found {movie_count} movies.', 'success')
+
+                # Optimistically apply the tested credentials so the dashboard can use them immediately.
+                updated = False
+                if plex_url_input:
+                    app.config['PLEX_URL'] = plex_url_to_test
+                    updated = True
+                if plex_token_input:
+                    app.config['PLEX_TOKEN'] = plex_token_to_test
+                    updated = True
+                if library_name_input:
+                    app.config['LIBRARY_NAME'] = library_name_to_test
+                    updated = True
+
+                if updated:
+                    # Mark setup as completed if the user just provided all core fields.
+                    if plex_url_input and plex_token_input and library_name_input:
+                        app.config['SETUP_COMPLETED'] = True
+
+                    if not save_settings():
+                        app.logger.warning("Test connection succeeded but saving settings failed.")
+                        flash('Unable to persist the tested settings. Please use Save Settings to try again.', 'error')
+
+            except ValueError as exc:
+                flash(str(exc), 'error')
+            except requests_exceptions.SSLError as exc:
+                flash(f'SSL error: {exc}', 'error')
+            except Exception as exc:
+                flash(f'Failed to connect to Plex: {exc}', 'error')
+
+            return redirect(url_for('settings_page'))
+
+        plex_url = plex_url_input
+        plex_token = plex_token_input
+        library_name = library_name_input
+
+        if plex_url:
+            try:
+                plex_url = _validate_and_normalize_plex_url(plex_url)
+            except ValueError as exc:
+                flash(str(exc), 'error')
+                return redirect(url_for('settings_page'))
+
+        scan_frequency = form.get('scan_frequency', '').strip()
+        try:
+            scan_frequency_value = int(scan_frequency) if scan_frequency else 24
+        except ValueError:
+            flash('Scan frequency must be a number (hours).', 'error')
+            return redirect(url_for('settings_page'))
+
+        app.config['PLEX_URL'] = plex_url
+        app.config['PLEX_TOKEN'] = plex_token
+        app.config['LIBRARY_NAME'] = library_name
+        app.config['COLLECTION_NAME_ALL_DV'] = form.get('collection_name_all_dv', '').strip() or 'All Dolby Vision'
+        app.config['COLLECTION_NAME_PROFILE7'] = form.get('collection_name_profile7', '').strip() or 'DV FEL Profile 7'
+        app.config['COLLECTION_NAME_TRUEHD_ATMOS'] = form.get('collection_name_truehd_atmos', '').strip() or 'TrueHD Atmos'
+        app.config['COLLECTION_ENABLE_DV'] = 'collection_enable_dv' in form
+        app.config['COLLECTION_ENABLE_P7'] = 'collection_enable_p7' in form
+        app.config['COLLECTION_ENABLE_ATMOS'] = 'collection_enable_atmos' in form
+        app.config['SCAN_FREQUENCY'] = scan_frequency_value
+        app.config['AUTO_START_MODE'] = form.get('auto_start', 'none')
+        try:
+            max_reports = int(form.get('max_reports_size', app.config.get('MAX_REPORTS_SIZE', 5)) or 5)
+        except ValueError:
+            flash('Max reports size must be a number.', 'error')
+            return redirect(url_for('settings_page'))
+        app.config['MAX_REPORTS_SIZE'] = max_reports
+        app.config['USE_WHOLE_NUMBERS'] = 'use_whole_numbers' in form
+        app.config['TELEGRAM_ENABLED'] = 'telegram_enabled' in form
+        app.config['TELEGRAM_TOKEN'] = form.get('telegram_token', '').strip() if app.config['TELEGRAM_ENABLED'] else ''
+        app.config['TELEGRAM_CHAT_ID'] = form.get('telegram_chat_id', '').strip() if app.config['TELEGRAM_ENABLED'] else ''
+        app.config['TELEGRAM_NOTIFY_ALL_UPDATES'] = 'telegram_notify_all_updates' in form
+        app.config['TELEGRAM_NOTIFY_NEW_MOVIES'] = 'telegram_notify_new_movies' in form
+        app.config['TELEGRAM_NOTIFY_DV'] = 'telegram_notify_dv' in form
+        app.config['TELEGRAM_NOTIFY_P7'] = 'telegram_notify_p7' in form
+        app.config['TELEGRAM_NOTIFY_ATMOS'] = 'telegram_notify_atmos' in form
+        app.config['SETUP_COMPLETED'] = 'setup_completed' in form
+
+        if save_settings():
+            flash('Settings saved successfully.', 'success')
+        else:
+            flash('Failed to save settings.', 'error')
+
+        return redirect(url_for('settings_page'))
+
+    settings = {
+        'plex_url': app.config.get('PLEX_URL', ''),
+        'plex_token': app.config.get('PLEX_TOKEN', ''),
+        'library_name': app.config.get('LIBRARY_NAME', ''),
+        'collection_name_all_dv': app.config.get('COLLECTION_NAME_ALL_DV', 'All Dolby Vision'),
+        'collection_name_profile7': app.config.get('COLLECTION_NAME_PROFILE7', 'DV FEL Profile 7'),
+        'collection_name_truehd_atmos': app.config.get('COLLECTION_NAME_TRUEHD_ATMOS', 'TrueHD Atmos'),
+        'collection_enable_dv': app.config.get('COLLECTION_ENABLE_DV', True),
+        'collection_enable_p7': app.config.get('COLLECTION_ENABLE_P7', True),
+        'collection_enable_atmos': app.config.get('COLLECTION_ENABLE_ATMOS', True),
+        'scan_frequency': app.config.get('SCAN_FREQUENCY', 24),
+        'auto_start': app.config.get('AUTO_START_MODE', 'none'),
+        'max_reports_size': app.config.get('MAX_REPORTS_SIZE', 5),
+        'use_whole_numbers': app.config.get('USE_WHOLE_NUMBERS', True),
+        'telegram_enabled': app.config.get('TELEGRAM_ENABLED', False),
+        'telegram_token': app.config.get('TELEGRAM_TOKEN', ''),
+        'telegram_chat_id': app.config.get('TELEGRAM_CHAT_ID', ''),
+        'telegram_notify_all_updates': app.config.get('TELEGRAM_NOTIFY_ALL_UPDATES', False),
+        'telegram_notify_new_movies': app.config.get('TELEGRAM_NOTIFY_NEW_MOVIES', True),
+        'telegram_notify_dv': app.config.get('TELEGRAM_NOTIFY_DV', True),
+        'telegram_notify_p7': app.config.get('TELEGRAM_NOTIFY_P7', True),
+        'telegram_notify_atmos': app.config.get('TELEGRAM_NOTIFY_ATMOS', True),
+        'setup_completed': app.config.get('SETUP_COMPLETED', False)
+    }
+
+    return render_template('settings.html', active_page='settings', settings=settings)
+
+
+@app.route('/iptscanner', methods=['GET', 'POST'])
+def iptscanner_page():
+    config = _load_ipt_config()
+    prowlarr_cfg = config.setdefault('prowlarr', {
+        'baseUrl': 'http://10.0.0.11:9696',
+        'apiKey': '',
+        'indexerId': 1
+    })
+
+    if request.method == 'POST':
+        form = request.form
+        action = form.get('action', 'save').lower()
+
+        if action == 'test-login':
+            base_url_input = form.get('prowlarr_url', '').strip()
+            api_key_input = form.get('prowlarr_api_key', '').strip()
+            indexer_input = form.get('prowlarr_indexer_id', '').strip()
+
+            base_url = base_url_input or prowlarr_cfg.get('baseUrl', '')
+            api_key = api_key_input or prowlarr_cfg.get('apiKey', '')
+            try:
+                indexer_id = int(indexer_input) if indexer_input else int(prowlarr_cfg.get('indexerId', 0) or 0)
+            except ValueError:
+                flash('Indexer ID must be a number.', 'error')
+                return redirect(url_for('iptscanner_page'))
+
+            success, message = _perform_ipt_login_test(base_url, api_key, indexer_id)
+            flash(message, 'success' if success else 'error')
+
+            if base_url_input:
+                prowlarr_cfg['baseUrl'] = base_url_input
+            if api_key_input:
+                prowlarr_cfg['apiKey'] = api_key_input
+            if indexer_input:
+                prowlarr_cfg['indexerId'] = indexer_id
+
+            _save_ipt_config(config)
+            if success:
+                schedule_ipt_scanner(config)
+
+            return redirect(url_for('iptscanner_page'))
+
+        base_url_val = form.get('prowlarr_url', '').strip()
+        api_key_val = form.get('prowlarr_api_key', '').strip()
+        indexer_val = form.get('prowlarr_indexer_id', '').strip()
+
+        prowlarr_cfg['baseUrl'] = base_url_val
+        prowlarr_cfg['apiKey'] = api_key_val
+
+        if indexer_val:
+            try:
+                prowlarr_cfg['indexerId'] = int(indexer_val)
+            except ValueError:
+                flash('Indexer ID must be a number.', 'error')
+                return redirect(url_for('iptscanner_page'))
+
+        search_term = form.get('search_term', '').strip()
+        if search_term:
+            config['searchTerm'] = search_term
+
+        interval = form.get('check_interval', '').strip()
+        if interval:
+            config['checkInterval'] = interval
+
+        saved = _save_ipt_config(config)
+        if saved:
+            schedule_ipt_scanner(config)
+        flash(
+            'IPT scanner settings saved.' if saved else 'Failed to save IPT scanner settings.',
+            'success' if saved else 'error'
+        )
+        return redirect(url_for('iptscanner_page'))
+
+    ipt_settings = {
+        'prowlarr_url': prowlarr_cfg.get('baseUrl', ''),
+        'prowlarr_api_key': prowlarr_cfg.get('apiKey', ''),
+        'prowlarr_indexer_id': prowlarr_cfg.get('indexerId', 1),
+        'search_term': config.get('searchTerm', ''),
+        'check_interval': config.get('checkInterval', '0 */2 * * *'),
+        'last_update_time': config.get('lastUpdateTime')
+    }
+
+    return render_template(
+        'iptscanner.html',
+        active_page='iptscanner',
+        settings=ipt_settings
+    )
+
+
+@app.post('/actions/scan')
+def start_scan_action():
+    operation = request.form.get('operation', 'scan')
+    success, message = _trigger_scan_operation(operation)
+    if success:
+        verb = 'Scan' if operation == 'scan' else 'Verification'
+        flash(f'{verb} started.', 'success')
+    else:
+        flash(message or 'Failed to start the requested operation.', 'error')
+    return redirect(url_for('dashboard'))
+
+
+@app.post('/actions/monitor')
+def monitor_action():
+    action = request.form.get('action', 'start')
+    success, message = _toggle_monitor_action(action)
+    if success:
+        if action == 'start':
+            flash('Monitor mode started.', 'success')
+        else:
+            flash('Monitor mode stopped.', 'success')
+    else:
+        flash(message or 'Failed to update monitor mode.', 'error')
+    return redirect(url_for('dashboard'))
 
 def init_iptscanner():
     """Initialize the IPT scanner components at startup"""
     try:
         app.logger.info("Initializing IPT scanner...")
-        
-        iptscanner_dir = _iptscanner_storage_dir()
-        config_path = _iptscanner_config_path()
-        cookies_path = _iptscanner_cookies_path()
-        data_path = _iptscanner_known_torrents_path()
-        profile_dir = _iptscanner_profile_dir()
-        
-        if not os.path.exists(config_path):
-            app.logger.info(f"Creating default IPT scanner config at {config_path}")
-            default_config = {
-                "iptorrents": {
-                    "url": "https://iptorrents.com/login",
-                    "searchUrl": "https://iptorrents.com/t?q=BL%2BEL%2BRPU&qf=adv#torrents",
-                    "searchTerm": "BL+EL+RPU",
-                    "cookiePath": cookies_path
-                },
-                "telegram": {
-                    "enabled": False,
-                    "botToken": "",
-                    "chatId": ""
-                },
-                "checkInterval": "0 */2 * * *",
-                "dataPath": data_path,
-                "configPath": config_path,
-                "cookiesPath": cookies_path,
-                "headless": True,
-                "debug": False,
-                "loginComplete": False,
-                "userDataDir": profile_dir,
-                "lastUpdateTime": None
-            }
-            
-            with open(config_path, 'w') as f:
-                json.dump(default_config, f, indent=4)
-                
+        config = _load_ipt_config()
+        _save_ipt_config(config)
         app.logger.info("IPT scanner initialized")
         return True
     except Exception as e:
@@ -2337,42 +2513,11 @@ init_iptscanner()
 def test_run_iptscanner():
     """Test run the IPT scanner"""
     try:
-        app.logger.info("Manual test run of IPT scanner triggered")
-        
-        config_path = _iptscanner_config_path()
-        script_dir = _iptscanner_script_dir()
-        
-        # Check if node_modules exist and install if needed
-        node_modules_path = os.path.join(script_dir, 'node_modules')
-        
-        if not os.path.exists(node_modules_path):
-            app.logger.info("Node modules not found, installing...")
-            try:
-                subprocess.run(['npm', 'install', '--no-cache'], cwd=script_dir, check=True)
-                app.logger.info("Node modules installed successfully")
-            except Exception as e:
-                app.logger.error(f"Failed to install node modules: {str(e)}")
-                return jsonify({'success': False, 'error': f'Failed to install node modules: {str(e)}'}), 500
-        
-        # Check if config exists
-        if not os.path.exists(config_path):
-            return jsonify({'success': False, 'error': f'Config file not found at {config_path}'}), 404
-            
-        # Load the config
-        try:
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-        except Exception as e:
-            return jsonify({'success': False, 'error': f'Failed to load config: {str(e)}'}), 500
-            
-        # Run the scanner
-        result = run_ipt_scanner(config)
-        
-        if result:
-            return jsonify({'success': True, 'message': 'IPT scanner test run completed successfully'})
-        else:
-            return jsonify({'success': False, 'error': 'IPT scanner test run failed, check logs for details'}), 500
-            
+        app.logger.info("Manual test run of Prowlarr scanner triggered")
+        results = run_ipt_scanner()
+        if results:
+            return jsonify({'success': True, 'count': len(results)})
+        return jsonify({'success': False, 'error': 'Unable to fetch results from Prowlarr'}), 500
     except Exception as e:
         app.logger.error(f"Error in test_run_iptscanner: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500

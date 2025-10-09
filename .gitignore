@@ -30,6 +30,7 @@ yarn-error.log
 venv/
 env/
 ENV/
+.venv/
 
 # Environment variables and sensitive data
 .env
@@ -40,16 +41,25 @@ settings.json
 iptscanner/config.json
 iptscanner/cookies.json
 *cookies.json
+iptradar/config.json
+iptradar/known_torrents.json
 
 # Data files
 exports/
 data/
 iptscanner/data/
 iptscanner/browser-profile/
+iptradar/browser-profile/
+iptradar/CGTPGto3.7/
 known_torrents.json
 movie_database.db
 *.db
 *.log
+nohup.out
+fetch-debug.html
+felscanner-data/
+iptradar/*.html
+iptradar/*.png
 
 # Docker
 *.pem
