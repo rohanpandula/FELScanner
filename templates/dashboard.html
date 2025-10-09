@@ -54,6 +54,9 @@
             <input type="hidden" name="action" value="stop">
             <button class="btn btn-danger" {% if not monitor_active %}disabled{% endif %}>Stop Monitor</button>
         </form>
+        <form class="inline" method="post" action="{{ url_for('ipt_fetch_action') }}">
+            <button class="btn btn-secondary">Fetch IPT Torrents</button>
+        </form>
     </div>
 </section>
 

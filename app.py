@@ -2123,30 +2123,20 @@ def schedule_ipt_scanner(config):
         app.logger.error(f"Error initializing scheduler: {str(e)}")
 
 def run_ipt_scanner(config=None):
-    """Fetch the latest results from Prowlarr and store them for later viewing."""
+    """Fetch the latest IPTorrents results and store them for later viewing."""
     try:
         cfg = config or _load_ipt_config()
-        results = _fetch_prowlarr_results(cfg)
-
-        storage_dir = _iptscanner_storage_dir()
-        data_dir = os.path.join(storage_dir, 'data')
-        os.makedirs(data_dir, exist_ok=True)
-        app_data_path = os.path.join(data_dir, 'torrents.json')
-
-        with open(app_data_path, 'w') as handle:
-            json.dump(results, handle, indent=2)
-
+        results = _fetch_ipt_results(cfg, limit=50, force=True)
         cfg['lastUpdateTime'] = datetime.now().isoformat()
         _save_ipt_config(cfg)
-        _set_prowlarr_status('connected', f"Cached {len(results)} results")
+        _set_iptorrents_status('connected', f'Fetched {len(results)} torrents')
         return results
     except ValueError as exc:
-        app.logger.error(f"Prowlarr configuration error: {exc}")
-        return False
-    except requests.RequestException as exc:
-        app.logger.error(f"Error fetching results from Prowlarr: {exc}")
+        _set_iptorrents_status('disconnected', str(exc))
+        app.logger.error(f"IPTorrents configuration error: {exc}")
         return False
     except Exception as exc:
+        _set_iptorrents_status('disconnected', str(exc))
         app.logger.error(f"Error in run_ipt_scanner: {exc}")
         return False
 
@@ -2476,6 +2466,17 @@ def monitor_action():
             flash('Monitor mode stopped.', 'success')
     else:
         flash(message or 'Failed to update monitor mode.', 'error')
+    return redirect(url_for('dashboard'))
+
+
+@app.post('/actions/ipt-fetch')
+def ipt_fetch_action():
+    """Force an immediate IPTorrents fetch."""
+    results = run_ipt_scanner()
+    if results is False:
+        flash('Failed to fetch IPTorrents results. Check logs for details.', 'error')
+    else:
+        flash(f'Fetched {len(results)} IPTorrents entries.', 'success')
     return redirect(url_for('dashboard'))
 
 def init_iptscanner():
