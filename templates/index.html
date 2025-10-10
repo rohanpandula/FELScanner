@@ -567,14 +567,32 @@
                             <tbody class="divide-y divide-slate-800">
                                 <tr v-for="torrent in iptTorrents" :key="torrent.name" class="hover:bg-slate-900/40">
                                     <td class="px-4 py-2 text-slate-200">
-                                        <a :href="torrent.link" target="_blank" class="hover:text-indigo-300">{{ torrent.name }}</a>
+                                        <a :href="torrent.link" target="_blank" class="hover:text-indigo-300 block">{{ torrent.name }}</a>
+                                        <div v-if="torrent.qualityBadges && torrent.qualityBadges.length" class="mt-1 flex flex-wrap gap-1">
+                                            <span v-for="badge in torrent.qualityBadges" :key="badge" class="rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase"
+                                                :class="{
+                                                    'border-indigo-500/50 bg-indigo-500/10 text-indigo-200': badge === 'P7' || badge === 'FEL',
+                                                    'border-purple-500/50 bg-purple-500/10 text-purple-200': badge === 'P5' || badge === 'DV',
+                                                    'border-teal-500/50 bg-teal-500/10 text-teal-200': badge === 'Atmos',
+                                                    'border-amber-500/50 bg-amber-500/10 text-amber-200': badge === '4K',
+                                                    'border-slate-600 bg-slate-800/50 text-slate-300': badge === '1080p'
+                                                }">
+                                                {{ badge }}
+                                            </span>
+                                        </div>
                                     </td>
                                     <td class="px-4 py-2 text-slate-400">{{ torrent.size || '—' }}</td>
                                     <td class="px-4 py-2 text-slate-400">{{ torrent.seeders }} / {{ torrent.leechers }}</td>
                                     <td class="px-4 py-2 text-slate-500">{{ torrent.added || torrent.addedRaw }}</td>
                                     <td class="px-3 py-2 text-center">
-                                        <span v-if="torrent.statusChecked" :class="torrent.inRadarr ? 'text-emerald-400 text-lg' : 'text-rose-400 text-lg'">
-                                            {{ torrent.inRadarr ? '✓' : '✗' }}
+                                        <button v-if="torrent.statusChecked && torrent.inRadarr && torrent.ratingKey"
+                                            @click="openRecentMovie({rating_key: torrent.ratingKey})"
+                                            :class="'text-emerald-400 text-lg hover:text-emerald-300 transition-colors cursor-pointer'"
+                                            title="Open in Metadata Explorer">
+                                            ✓
+                                        </button>
+                                        <span v-else-if="torrent.statusChecked" :class="'text-rose-400 text-lg'">
+                                            ✗
                                         </span>
                                         <span v-else class="text-slate-600 text-xs">—</span>
                                     </td>

@@ -707,6 +707,9 @@ def _compute_dolby_metrics() -> dict:
 
 
 def _fetch_ipt_results(config: dict, limit: int = 50, force: bool = True) -> list[dict]:
+    # Set status to fetching at the start
+    _set_iptorrents_status('fetching', 'Fetching torrents from IPT...')
+
     search_term = (config.get('searchTerm') or '').strip()
     if not search_term:
         raise ValueError('Search term is required.')
@@ -2856,48 +2859,125 @@ def _enrich_torrent_with_status(torrent: dict) -> dict:
     enriched['statusChecked'] = False
 
     try:
-        if not upgrade_detector or not radarr_client or not state.scanner_obj:
+        # Need at least upgrade_detector and radarr_client to do any checking
+        if not upgrade_detector or not radarr_client:
+            app.logger.warning("Enrichment skipped: upgrade_detector or radarr_client not available")
             return enriched
+
+        # Get original torrent name (with all quality info) for badge parsing
+        original_title = torrent.get('name', '')
 
         # Parse torrent title to extract movie info
-        title_str = torrent.get('name', '')
-        parsed = upgrade_detector.parse_torrent_title(title_str)
+        # Strip "Loading..." artifact from IPT scraping
+        title_str = original_title.replace('Loading...', '').strip()
 
-        if not parsed or not parsed.get('title'):
+        # Parse movie title and year using regex (from DownloadManager logic)
+        movie_title = None
+        movie_year = None
+
+        # Pattern 1: Title (Year) or Title.Year
+        pattern1 = r'^(.+?)[.\s]+(\d{4})[.\s]'
+        match = re.search(pattern1, title_str)
+
+        if match:
+            movie_title = match.group(1).replace('.', ' ').strip()
+            movie_year = int(match.group(2))
+            # Clean up title
+            movie_title = re.sub(r'\s+', ' ', movie_title)
+        else:
+            # Pattern 2: Just grab everything before first year-like number
+            pattern2 = r'^(.+?)\s+(\d{4})'
+            match = re.search(pattern2, title_str)
+
+            if match:
+                movie_title = match.group(1).strip()
+                movie_year = int(match.group(2))
+
+        if not movie_title:
+            app.logger.debug(f"Could not parse torrent title: {title_str}")
             return enriched
 
-        movie_title = parsed.get('title')
-        movie_year = parsed.get('year')
+        app.logger.info(f"Checking status for: {movie_title} ({movie_year})")
 
         # Check if movie is in Radarr
         async def _check_radarr():
             try:
                 movie = await radarr_client.search_movie(movie_title, movie_year)
                 return movie is not None
-            except:
+            except Exception as e:
+                app.logger.error(f"Radarr check failed for {movie_title}: {str(e)}")
                 return False
 
         in_radarr = run_async(_check_radarr())
         enriched['inRadarr'] = in_radarr
+        app.logger.info(f"  In Radarr: {in_radarr}")
 
-        # Check if movie already has P7 FEL in Plex
-        if movie_year:
-            movie_data = state.scanner_obj.db.find_movie_by_title_year(movie_title, movie_year)
+        # Check if movie already has P7 FEL in Plex (only if scanner DB is available)
+        if state.scanner_obj and state.scanner_obj.db:
+            try:
+                if movie_year:
+                    movie_data = state.scanner_obj.db.find_movie_by_title_year(movie_title, movie_year)
+                else:
+                    movie_data = state.scanner_obj.db.find_movie_by_title(movie_title)
+
+                if movie_data:
+                    # Check if current quality is P7 FEL
+                    dv_profile = movie_data.get('dv_profile')
+                    is_fel = movie_data.get('dv_fel') or movie_data.get('is_fel', False)
+
+                    if dv_profile == 7 and is_fel:
+                        enriched['hasP7FEL'] = True
+
+                    # Store rating_key for linking to metadata explorer
+                    enriched['ratingKey'] = movie_data.get('rating_key')
+
+                    app.logger.info(f"  Has P7 FEL: {enriched['hasP7FEL']} (profile: {dv_profile}, fel: {is_fel})")
+                else:
+                    app.logger.info(f"  Not found in Plex database")
+            except Exception as e:
+                app.logger.error(f"Plex DB check failed for {movie_title}: {str(e)}")
         else:
-            movie_data = state.scanner_obj.db.find_movie_by_title(movie_title)
-
-        if movie_data:
-            # Check if current quality is P7 FEL
-            dv_profile = movie_data.get('dv_profile')
-            is_fel = movie_data.get('dv_fel') or movie_data.get('is_fel', False)
-
-            if dv_profile == 7 and is_fel:
-                enriched['hasP7FEL'] = True
+            app.logger.warning("Scanner DB not available, skipping P7 FEL check")
 
         enriched['statusChecked'] = True
 
+        # Parse quality badges from ORIGINAL title (with all quality info)
+        quality_badges = []
+        original_upper = original_title.upper()
+
+        # DV Profile detection
+        if 'PROFILE 7' in original_upper or 'P7' in original_upper or 'PROFILE7' in original_upper:
+            quality_badges.append('P7')
+        elif 'PROFILE 5' in original_upper or 'P5' in original_upper or 'PROFILE5' in original_upper:
+            quality_badges.append('P5')
+        elif 'DOLBY VISION' in original_upper or ' DV ' in original_upper or 'DV-' in original_upper or 'DOVI' in original_upper:
+            quality_badges.append('DV')
+
+        # FEL detection
+        if 'FEL' in original_upper or 'BL+EL' in original_upper:
+            if 'P7' not in quality_badges:
+                quality_badges.append('P7')
+            quality_badges.append('FEL')
+
+        # Atmos detection
+        if 'ATMOS' in original_upper:
+            quality_badges.append('Atmos')
+
+        # Resolution detection
+        if '2160P' in original_upper or '4K' in original_upper or 'UHD' in original_upper:
+            quality_badges.append('4K')
+        elif '1080P' in original_upper:
+            quality_badges.append('1080p')
+
+        enriched['qualityBadges'] = quality_badges
+
+        # Update the display name (strip Loading...)
+        enriched['name'] = title_str
+
     except Exception as e:
         app.logger.error(f"Error enriching torrent status: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
     return enriched
 
@@ -3405,6 +3485,23 @@ def init_iptscanner():
         config = _load_ipt_config()
         _save_ipt_config(config)
         app.logger.info("IPT scanner initialized")
+
+        # Trigger initial IPT fetch in background (after 5 seconds to let app start up)
+        def _startup_ipt_fetch():
+            import time
+            time.sleep(5)
+            try:
+                app.logger.info("Triggering startup IPT feed refresh...")
+                with app.app_context():
+                    _fetch_ipt_results(config, force=True)
+                app.logger.info("Startup IPT feed refresh completed")
+            except Exception as e:
+                app.logger.error(f"Error during startup IPT fetch: {str(e)}")
+
+        import threading
+        fetch_thread = threading.Thread(target=_startup_ipt_fetch, daemon=True)
+        fetch_thread.start()
+
         return True
     except Exception as e:
         app.logger.error(f"Error initializing IPT scanner: {str(e)}")
@@ -3593,7 +3690,11 @@ def check_torrent_upgrade():
             return jsonify({'success': False, 'error': 'Torrent title required'}), 400
 
         if not download_manager:
-            return jsonify({'success': False, 'error': 'Download manager not initialized'}), 500
+            return jsonify({
+                'success': False,
+                'error': 'Scanner database not yet initialized. Please wait for the Plex scan to complete, or start a manual scan.',
+                'notReady': True
+            }), 503
 
         # Prepare torrent data in the same format as IPT discoveries
         torrent_data = {
