@@ -904,7 +904,10 @@ createApp({
                     fetchJSON('/api/download/pending'),
                     fetchJSON('/api/download/active')
                 ]);
-                downloads.pending = pendingData || [];
+                downloads.pending = (pendingData || []).map((download) => ({
+                    ...download,
+                    id: download.request_id || download.id
+                }));
                 downloads.active = activeData || [];
             } catch (error) {
                 console.error('Failed to refresh downloads', error);
@@ -952,15 +955,18 @@ createApp({
         };
 
         const approveDownload = async (downloadId) => {
-            const download = downloads.pending.find((d) => d.id === downloadId);
+            const download = downloads.pending.find(
+                (d) => (d.request_id || d.id) === downloadId
+            );
             if (!download) return;
 
+            const requestId = download.request_id || downloadId;
             download.processing = true;
             try {
                 const response = await fetch('/api/download/approve', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ download_id: downloadId })
+                    body: JSON.stringify({ request_id: requestId })
                 });
                 const result = await response.json();
 
@@ -982,15 +988,18 @@ createApp({
         };
 
         const declineDownload = async (downloadId) => {
-            const download = downloads.pending.find((d) => d.id === downloadId);
+            const download = downloads.pending.find(
+                (d) => (d.request_id || d.id) === downloadId
+            );
             if (!download) return;
 
+            const requestId = download.request_id || downloadId;
             download.processing = true;
             try {
                 const response = await fetch('/api/download/decline', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ download_id: downloadId })
+                    body: JSON.stringify({ request_id: requestId })
                 });
                 const result = await response.json();
 
