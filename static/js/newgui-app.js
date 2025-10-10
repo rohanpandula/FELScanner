@@ -255,6 +255,51 @@ createApp({
             }
         ]);
 
+        const connectionOrder = ['plex', 'radarr', 'qbittorrent', 'telegram', 'iptorrents'];
+        const connectionNameMap = {
+            plex: 'Plex',
+            radarr: 'Radarr',
+            qbittorrent: 'qBittorrent',
+            telegram: 'Telegram',
+            iptorrents: 'IPTorrents'
+        };
+
+        const connectionList = Vue.computed(() => {
+            const entries = Object.entries(connections).map(([key, details]) => ({
+                key,
+                name: connectionNameMap[key] || key.replace(/_/g, ' '),
+                status: (details?.status || 'unknown').toLowerCase(),
+                message: details?.message || 'No telemetry reported yet.',
+                lastCheck: details?.last_check || null,
+                nextCheck: details?.next_check || null
+            }));
+            entries.sort((a, b) => {
+                const aIdx = connectionOrder.indexOf(a.key);
+                const bIdx = connectionOrder.indexOf(b.key);
+                if (aIdx === -1 && bIdx === -1) {
+                    return a.name.localeCompare(b.name);
+                }
+                if (aIdx === -1) return 1;
+                if (bIdx === -1) return -1;
+                return aIdx - bIdx;
+            });
+            return entries;
+        });
+
+        const connectionStatusClass = (status) => {
+            const normalized = (status || '').toLowerCase();
+            if (normalized === 'connected') {
+                return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200';
+            }
+            if (normalized === 'error' || normalized === 'disconnected') {
+                return 'border-rose-500/40 bg-rose-500/10 text-rose-200';
+            }
+            if (normalized === 'disabled') {
+                return 'border-slate-700 bg-slate-900/70 text-slate-300';
+            }
+            return 'border-amber-500/40 bg-amber-500/10 text-amber-200';
+        };
+
         const formatTimestamp = (value) => {
             if (!value) return null;
             const date = new Date(value);
@@ -1081,6 +1126,8 @@ createApp({
             checkTorrentUpgrade,
             approveDownload,
             declineDownload,
+            connectionList,
+            connectionStatusClass,
             metadata,
             movieSearch,
             metadataFilters,
@@ -1124,7 +1171,8 @@ createApp({
             testTelegram,
             testFlareSolverr,
             testIPT,
-            connectService
+            connectService,
+            refreshConnections
         };
     }
 }).mount('#app');
