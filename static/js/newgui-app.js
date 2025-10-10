@@ -911,6 +911,46 @@ createApp({
             }
         };
 
+        const checkTorrentUpgrade = async (torrent) => {
+            // Mark torrent as being checked
+            torrent.checking = true;
+            flashMessage.value = 'Checking torrent for quality upgrades...';
+
+            try {
+                const response = await fetch('/api/download/check-upgrade', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title: torrent.name,
+                        link: torrent.link,
+                        size: torrent.size
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    if (result.skipped) {
+                        flashMessage.value = result.message || 'Not a quality upgrade';
+                    } else {
+                        flashMessage.value = result.message || 'Upgrade check complete';
+                        // Refresh pending downloads to show the new approval request
+                        await refreshDownloads();
+                    }
+                } else {
+                    flashMessage.value = `Check failed: ${result.error || 'Unknown error'}`;
+                }
+            } catch (error) {
+                console.error('Failed to check torrent upgrade', error);
+                flashMessage.value = 'Failed to check torrent upgrade';
+            } finally {
+                torrent.checking = false;
+                setTimeout(() => {
+                    flashMessage.value = '';
+                }, 4000);
+            }
+        };
+
         const approveDownload = async (downloadId) => {
             const download = downloads.pending.find((d) => d.id === downloadId);
             if (!download) return;
@@ -1029,6 +1069,7 @@ createApp({
             refreshAll,
             refreshIPT,
             refreshDownloads,
+            checkTorrentUpgrade,
             approveDownload,
             declineDownload,
             metadata,

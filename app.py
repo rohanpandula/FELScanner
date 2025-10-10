@@ -2034,9 +2034,25 @@ def add_cache_headers(response):
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     return response
 
+def get_git_info():
+    """Get current git branch and commit"""
+    try:
+        import subprocess
+        branch = subprocess.check_output(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+                                       stderr=subprocess.DEVNULL).decode('utf-8').strip()
+        commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'],
+                                        stderr=subprocess.DEVNULL).decode('utf-8').strip()
+        return branch, commit
+    except:
+        return 'unknown', 'unknown'
+
 @app.route('/')
 def index():
-    return render_template('index.html', cache_buster=int(time.time()))
+    git_branch, git_commit = get_git_info()
+    return render_template('index.html',
+                         cache_buster=int(time.time()),
+                         git_branch=git_branch,
+                         git_commit=git_commit)
 
 @app.route('/api/status')
 def api_status():
@@ -3510,6 +3526,55 @@ def get_active_downloads():
     except Exception as e:
         app.logger.error(f"Error getting active downloads: {str(e)}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/download/check-upgrade', methods=['POST'])
+def check_torrent_upgrade():
+    """Manually check if a torrent is a quality upgrade"""
+    try:
+        data = request.get_json()
+
+        if not data or not data.get('title'):
+            return jsonify({'success': False, 'error': 'Torrent title required'}), 400
+
+        if not download_manager:
+            return jsonify({'success': False, 'error': 'Download manager not initialized'}), 500
+
+        # Prepare torrent data in the same format as IPT discoveries
+        torrent_data = {
+            'title': data.get('title'),
+            'link': data.get('link', data.get('magnet_link', '')),
+            'size': data.get('size', 'Unknown')
+        }
+
+        app.logger.info(f"Manual upgrade check requested for: {torrent_data['title']}")
+
+        # Process the torrent through the download manager
+        result = run_async(download_manager.process_ipt_discovery(torrent_data))
+
+        if result.get('status') == 'notification_sent':
+            return jsonify({
+                'success': True,
+                'message': 'Upgrade detected! Check Pending Approvals.',
+                'request_id': result.get('request_id')
+            })
+        elif result.get('status') == 'skipped':
+            return jsonify({
+                'success': True,
+                'message': result.get('reason', 'Not a quality upgrade'),
+                'skipped': True
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'message': result.get('message', 'Check completed'),
+                'result': result
+            })
+
+    except Exception as e:
+        app.logger.error(f"Error checking torrent upgrade: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/qbittorrent/settings', methods=['GET', 'POST'])
 def qbittorrent_settings():
