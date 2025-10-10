@@ -66,6 +66,10 @@ createApp({
         const iptTorrents = ref([]);
         const connections = reactive({});
         const actionLoading = reactive({ scan: false, verify: false, monitor: false, ipt: false });
+        const downloads = reactive({
+            pending: [],
+            active: []
+        });
         const settingsForm = reactive({
             plex_url: '',
             plex_token: '',
@@ -894,9 +898,164 @@ createApp({
             }
         };
 
+        const refreshDownloads = async () => {
+            try {
+                const [pendingData, activeData] = await Promise.all([
+                    fetchJSON('/api/download/pending'),
+                    fetchJSON('/api/download/active')
+                ]);
+                downloads.pending = (pendingData || []).map((download) => ({
+                    ...download,
+                    id: download.request_id || download.id
+                }));
+                downloads.active = activeData || [];
+            } catch (error) {
+                console.error('Failed to refresh downloads', error);
+            }
+        };
+
+        const checkTorrentUpgrade = async (torrent) => {
+            // Mark torrent as being checked
+            torrent.checking = true;
+            flashMessage.value = 'Checking torrent for quality upgrades...';
+
+            try {
+                const response = await fetch('/api/download/check-upgrade', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title: torrent.name,
+                        link: torrent.link,
+                        size: torrent.size
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    if (result.skipped) {
+                        flashMessage.value = result.message || 'Not a quality upgrade';
+                    } else {
+                        flashMessage.value = result.message || 'Upgrade check complete';
+                        // Refresh pending downloads to show the new approval request
+                        await refreshDownloads();
+                    }
+                } else {
+                    flashMessage.value = `Check failed: ${result.error || 'Unknown error'}`;
+                }
+            } catch (error) {
+                console.error('Failed to check torrent upgrade', error);
+                flashMessage.value = 'Failed to check torrent upgrade';
+            } finally {
+                torrent.checking = false;
+                setTimeout(() => {
+                    flashMessage.value = '';
+                }, 4000);
+            }
+        };
+
+        const approveDownload = async (downloadId) => {
+            const download = downloads.pending.find(
+                (d) => (d.request_id || d.id) === downloadId
+            );
+            if (!download) return;
+
+            const requestId = download.request_id || downloadId;
+            download.processing = true;
+            try {
+                const response = await fetch('/api/download/approve', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ request_id: requestId })
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    flashMessage.value = 'Download approved! Adding to qBittorrent...';
+                    await refreshDownloads();
+                } else {
+                    flashMessage.value = `Failed to approve: ${result.error || 'Unknown error'}`;
+                }
+            } catch (error) {
+                console.error('Failed to approve download', error);
+                flashMessage.value = 'Failed to approve download';
+            } finally {
+                download.processing = false;
+                setTimeout(() => {
+                    flashMessage.value = '';
+                }, 4000);
+            }
+        };
+
+        const declineDownload = async (downloadId) => {
+            const download = downloads.pending.find(
+                (d) => (d.request_id || d.id) === downloadId
+            );
+            if (!download) return;
+
+            const requestId = download.request_id || downloadId;
+            download.processing = true;
+            try {
+                const response = await fetch('/api/download/decline', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ request_id: requestId })
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    flashMessage.value = 'Download declined';
+                    await refreshDownloads();
+                } else {
+                    flashMessage.value = `Failed to decline: ${result.error || 'Unknown error'}`;
+                }
+            } catch (error) {
+                console.error('Failed to decline download', error);
+                flashMessage.value = 'Failed to decline download';
+            } finally {
+                download.processing = false;
+                setTimeout(() => {
+                    flashMessage.value = '';
+                }, 3000);
+            }
+        };
+
+        const formatTorrentState = (state) => {
+            const stateMap = {
+                'downloading': 'Downloading',
+                'pausedDL': 'Paused',
+                'stalledDL': 'Stalled',
+                'uploading': 'Seeding',
+                'stalledUP': 'Seeding',
+                'pausedUP': 'Completed',
+                'queuedDL': 'Queued',
+                'queuedUP': 'Queued',
+                'checkingDL': 'Checking',
+                'checkingUP': 'Checking',
+                'error': 'Error',
+                'missingFiles': 'Missing',
+                'unknown': 'Unknown'
+            };
+            return stateMap[state] || state || 'Unknown';
+        };
+
+        const formatSpeed = (bytesPerSecond) => {
+            const bytes = Number(bytesPerSecond);
+            if (!Number.isFinite(bytes) || bytes <= 0) return '—';
+
+            if (bytes >= 1024 * 1024) {
+                return `${(bytes / (1024 * 1024)).toFixed(1)} MB/s`;
+            }
+            if (bytes >= 1024) {
+                return `${(bytes / 1024).toFixed(1)} KB/s`;
+            }
+            return `${bytes} B/s`;
+        };
+
         onMounted(async () => {
             await refreshAll();
             await loadSettings();
+            await refreshDownloads();
             startAutoRefresh();
         });
 
@@ -908,6 +1067,7 @@ createApp({
             iptTorrents,
             connections,
             actionLoading,
+            downloads,
             summaryCards,
             flashMessage,
             showSettings,
@@ -917,6 +1077,10 @@ createApp({
             testStatus,
             refreshAll,
             refreshIPT,
+            refreshDownloads,
+            checkTorrentUpgrade,
+            approveDownload,
+            declineDownload,
             metadata,
             movieSearch,
             metadataFilters,
@@ -950,6 +1114,8 @@ createApp({
             formatAudioSummary,
             formatVersionSummary,
             formatVersionLabel,
+            formatTorrentState,
+            formatSpeed,
             describeVideoStream,
             describeAudioStream,
             describeSubtitleStream,

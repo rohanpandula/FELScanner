@@ -707,6 +707,9 @@ def _compute_dolby_metrics() -> dict:
 
 
 def _fetch_ipt_results(config: dict, limit: int = 50, force: bool = True) -> list[dict]:
+    # Set status to fetching at the start
+    _set_iptorrents_status('fetching', 'Fetching torrents from IPT...')
+
     search_term = (config.get('searchTerm') or '').strip()
     if not search_term:
         raise ValueError('Search term is required.')
@@ -1319,6 +1322,119 @@ def check_telegram_connection():
             state.last_telegram_check = now
         return False
 
+# Check Radarr connection
+async def check_radarr_connection():
+    """Check Radarr connection status"""
+    now = datetime.now()
+    next_check = now + timedelta(minutes=15)
+
+    if not radarr_client or not app.config.get('RADARR_URL') or not app.config.get('RADARR_API_KEY'):
+        with state.lock:
+            state.connection_status['radarr'] = {
+                'status': 'disconnected',
+                'message': 'Not configured',
+                'last_check': now.isoformat(),
+                'next_check': next_check.isoformat()
+            }
+        return False
+
+    try:
+        result = await radarr_client.test_connection()
+        if result.get('success'):
+            movie_count = result.get('movie_count', 0)
+            with state.lock:
+                state.connection_status['radarr'] = {
+                    'status': 'connected',
+                    'message': f'Connected • {movie_count} movies • Checked {now.strftime("%H:%M")}',
+                    'last_check': now.isoformat(),
+                    'next_check': next_check.isoformat()
+                }
+            return True
+        else:
+            with state.lock:
+                state.connection_status['radarr'] = {
+                    'status': 'error',
+                    'message': result.get('error', 'Connection failed'),
+                    'last_check': now.isoformat(),
+                    'next_check': next_check.isoformat()
+                }
+            return False
+    except Exception as e:
+        with state.lock:
+            state.connection_status['radarr'] = {
+                'status': 'error',
+                'message': f'Error: {str(e)}',
+                'last_check': now.isoformat(),
+                'next_check': next_check.isoformat()
+            }
+        return False
+
+# Check qBittorrent connection
+async def check_qbittorrent_connection():
+    """Check qBittorrent connection status"""
+    now = datetime.now()
+    next_check = now + timedelta(minutes=15)
+
+    if not qbt_client or not app.config.get('QBITTORRENT_HOST'):
+        with state.lock:
+            state.connection_status['qbittorrent'] = {
+                'status': 'disconnected',
+                'message': 'Not configured',
+                'last_check': now.isoformat(),
+                'next_check': next_check.isoformat()
+            }
+        return False
+
+    try:
+        result = await qbt_client.test_connection()
+        if result.get('success'):
+            torrent_count = result.get('torrent_count', 0)
+            with state.lock:
+                state.connection_status['qbittorrent'] = {
+                    'status': 'connected',
+                    'message': f'Connected • {torrent_count} torrents • Checked {now.strftime("%H:%M")}',
+                    'last_check': now.isoformat(),
+                    'next_check': next_check.isoformat()
+                }
+            return True
+        else:
+            with state.lock:
+                state.connection_status['qbittorrent'] = {
+                    'status': 'error',
+                    'message': result.get('error', 'Connection failed'),
+                    'last_check': now.isoformat(),
+                    'next_check': next_check.isoformat()
+                }
+            return False
+    except Exception as e:
+        with state.lock:
+            state.connection_status['qbittorrent'] = {
+                'status': 'error',
+                'message': f'Error: {str(e)}',
+                'last_check': now.isoformat(),
+                'next_check': next_check.isoformat()
+            }
+        return False
+
+# Helper to run async jobs in scheduler
+def run_async_job(async_func):
+    """Run an async function in a new event loop for scheduler"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(async_func())
+    finally:
+        loop.close()
+
+def run_async(coro):
+    """Run an async coroutine in a new event loop (for Flask routes)"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
 # Initialize periodic connection checks
 def init_connection_checks():
     """Start background scheduler for periodic connection checks."""
@@ -1361,6 +1477,32 @@ def init_connection_checks():
                 next_run_time=datetime.now()  # Run immediately on startup
             )
             app.logger.info("Scheduled Telegram connection check every hour")
+
+        # Add Radarr check job (every 15 minutes)
+        if not scheduler.get_job('radarr_check'):
+            scheduler.add_job(
+                func=run_async_job,
+                args=[check_radarr_connection],
+                trigger='interval',
+                minutes=15,
+                id='radarr_check',
+                replace_existing=True,
+                next_run_time=datetime.now()  # Run immediately on startup
+            )
+            app.logger.info("Scheduled Radarr connection check every 15 minutes")
+
+        # Add qBittorrent check job (every 15 minutes)
+        if not scheduler.get_job('qbittorrent_check'):
+            scheduler.add_job(
+                func=run_async_job,
+                args=[check_qbittorrent_connection],
+                trigger='interval',
+                minutes=15,
+                id='qbittorrent_check',
+                replace_existing=True,
+                next_run_time=datetime.now()  # Run immediately on startup
+            )
+            app.logger.info("Scheduled qBittorrent connection check every 15 minutes")
 
     except Exception as e:
         app.logger.error(f"Error initializing connection check scheduler: {str(e)}")
@@ -1895,9 +2037,25 @@ def add_cache_headers(response):
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     return response
 
+def get_git_info():
+    """Get current git branch and commit"""
+    try:
+        import subprocess
+        branch = subprocess.check_output(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+                                       stderr=subprocess.DEVNULL).decode('utf-8').strip()
+        commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'],
+                                        stderr=subprocess.DEVNULL).decode('utf-8').strip()
+        return branch, commit
+    except:
+        return 'unknown', 'unknown'
+
 @app.route('/')
 def index():
-    return render_template('index.html', cache_buster=int(time.time()))
+    git_branch, git_commit = get_git_info()
+    return render_template('index.html',
+                         cache_buster=int(time.time()),
+                         git_branch=git_branch,
+                         git_commit=git_commit)
 
 @app.route('/api/status')
 def api_status():
@@ -2693,6 +2851,136 @@ def iptscanner_settings():
         return jsonify({'success': False, 'error': str(exc)}), 500
                 
 
+def _enrich_torrent_with_status(torrent: dict) -> dict:
+    """Add status indicators to a torrent (in Radarr, has P7 FEL)"""
+    enriched = torrent.copy()
+    enriched['inRadarr'] = False
+    enriched['hasP7FEL'] = False
+    enriched['statusChecked'] = False
+
+    try:
+        # Need at least upgrade_detector and radarr_client to do any checking
+        if not upgrade_detector or not radarr_client:
+            app.logger.warning("Enrichment skipped: upgrade_detector or radarr_client not available")
+            return enriched
+
+        # Get original torrent name (with all quality info) for badge parsing
+        original_title = torrent.get('name', '')
+
+        # Parse torrent title to extract movie info
+        # Strip "Loading..." artifact from IPT scraping
+        title_str = original_title.replace('Loading...', '').strip()
+
+        # Parse movie title and year using regex (from DownloadManager logic)
+        movie_title = None
+        movie_year = None
+
+        # Pattern 1: Title (Year) or Title.Year
+        pattern1 = r'^(.+?)[.\s]+(\d{4})[.\s]'
+        match = re.search(pattern1, title_str)
+
+        if match:
+            movie_title = match.group(1).replace('.', ' ').strip()
+            movie_year = int(match.group(2))
+            # Clean up title
+            movie_title = re.sub(r'\s+', ' ', movie_title)
+        else:
+            # Pattern 2: Just grab everything before first year-like number
+            pattern2 = r'^(.+?)\s+(\d{4})'
+            match = re.search(pattern2, title_str)
+
+            if match:
+                movie_title = match.group(1).strip()
+                movie_year = int(match.group(2))
+
+        if not movie_title:
+            app.logger.debug(f"Could not parse torrent title: {title_str}")
+            return enriched
+
+        app.logger.info(f"Checking status for: {movie_title} ({movie_year})")
+
+        # Check if movie is in Radarr
+        async def _check_radarr():
+            try:
+                movie = await radarr_client.search_movie(movie_title, movie_year)
+                return movie is not None
+            except Exception as e:
+                app.logger.error(f"Radarr check failed for {movie_title}: {str(e)}")
+                return False
+
+        in_radarr = run_async(_check_radarr())
+        enriched['inRadarr'] = in_radarr
+        app.logger.info(f"  In Radarr: {in_radarr}")
+
+        # Check if movie already has P7 FEL in Plex (only if scanner DB is available)
+        if state.scanner_obj and state.scanner_obj.db:
+            try:
+                if movie_year:
+                    movie_data = state.scanner_obj.db.find_movie_by_title_year(movie_title, movie_year)
+                else:
+                    movie_data = state.scanner_obj.db.find_movie_by_title(movie_title)
+
+                if movie_data:
+                    # Check if current quality is P7 FEL
+                    dv_profile = movie_data.get('dv_profile')
+                    is_fel = movie_data.get('dv_fel') or movie_data.get('is_fel', False)
+
+                    if dv_profile == 7 and is_fel:
+                        enriched['hasP7FEL'] = True
+
+                    # Store rating_key for linking to metadata explorer
+                    enriched['ratingKey'] = movie_data.get('rating_key')
+
+                    app.logger.info(f"  Has P7 FEL: {enriched['hasP7FEL']} (profile: {dv_profile}, fel: {is_fel})")
+                else:
+                    app.logger.info(f"  Not found in Plex database")
+            except Exception as e:
+                app.logger.error(f"Plex DB check failed for {movie_title}: {str(e)}")
+        else:
+            app.logger.warning("Scanner DB not available, skipping P7 FEL check")
+
+        enriched['statusChecked'] = True
+
+        # Parse quality badges from ORIGINAL title (with all quality info)
+        quality_badges = []
+        original_upper = original_title.upper()
+
+        # DV Profile detection
+        if 'PROFILE 7' in original_upper or 'P7' in original_upper or 'PROFILE7' in original_upper:
+            quality_badges.append('P7')
+        elif 'PROFILE 5' in original_upper or 'P5' in original_upper or 'PROFILE5' in original_upper:
+            quality_badges.append('P5')
+        elif 'DOLBY VISION' in original_upper or ' DV ' in original_upper or 'DV-' in original_upper or 'DOVI' in original_upper:
+            quality_badges.append('DV')
+
+        # FEL detection
+        if 'FEL' in original_upper or 'BL+EL' in original_upper:
+            if 'P7' not in quality_badges:
+                quality_badges.append('P7')
+            quality_badges.append('FEL')
+
+        # Atmos detection
+        if 'ATMOS' in original_upper:
+            quality_badges.append('Atmos')
+
+        # Resolution detection
+        if '2160P' in original_upper or '4K' in original_upper or 'UHD' in original_upper:
+            quality_badges.append('4K')
+        elif '1080P' in original_upper:
+            quality_badges.append('1080p')
+
+        enriched['qualityBadges'] = quality_badges
+
+        # Update the display name (strip Loading...)
+        enriched['name'] = title_str
+
+    except Exception as e:
+        app.logger.error(f"Error enriching torrent status: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+    return enriched
+
 @app.route('/api/iptscanner/torrents', methods=['GET'])
 def iptscanner_torrents():
     try:
@@ -2706,8 +2994,11 @@ def iptscanner_torrents():
             if not torrents:
                 torrents = _fetch_ipt_results(config, force=True)
 
+        # Enrich each torrent with status indicators
+        enriched_torrents = [_enrich_torrent_with_status(t) for t in torrents]
+
         return jsonify({
-            'torrents': torrents,
+            'torrents': enriched_torrents,
             'searchTerm': config.get('searchTerm', ''),
             'lastCheck': config.get('lastUpdateTime')
         })
@@ -2806,6 +3097,33 @@ def run_ipt_scanner(config=None):
         cfg['lastUpdateTime'] = datetime.now().isoformat()
         _save_ipt_config(cfg)
         _set_iptorrents_status('connected', f'Fetched {len(results)} torrents')
+
+        # Process new torrents for download approval (if download_manager is available)
+        if download_manager and results:
+            app.logger.info(f"Processing {len(results)} torrents for download approval")
+            for torrent in results:
+                try:
+                    # Only process if it's marked as new
+                    if torrent.get('isNew', False):
+                        torrent_data = {
+                            'title': torrent.get('title', ''),
+                            'url': torrent.get('url', ''),
+                            'magnet_link': torrent.get('magnetLink', ''),
+                            'size': torrent.get('size', ''),
+                            'seeders': torrent.get('seeders', 0)
+                        }
+
+                        # Process the torrent discovery
+                        result = run_async(download_manager.process_ipt_discovery(torrent_data))
+
+                        if result.get('status') == 'notification_sent':
+                            app.logger.info(f"Sent approval request for: {torrent.get('title')}")
+                        elif result.get('status') == 'skipped':
+                            app.logger.debug(f"Skipped (not an upgrade): {torrent.get('title')}")
+                except Exception as e:
+                    app.logger.error(f"Error processing torrent {torrent.get('title')}: {e}")
+                    continue
+
         return results
     except ValueError as exc:
         _set_iptorrents_status('disconnected', str(exc))
@@ -3167,6 +3485,23 @@ def init_iptscanner():
         config = _load_ipt_config()
         _save_ipt_config(config)
         app.logger.info("IPT scanner initialized")
+
+        # Trigger initial IPT fetch in background (after 5 seconds to let app start up)
+        def _startup_ipt_fetch():
+            import time
+            time.sleep(5)
+            try:
+                app.logger.info("Triggering startup IPT feed refresh...")
+                with app.app_context():
+                    _fetch_ipt_results(config, force=True)
+                app.logger.info("Startup IPT feed refresh completed")
+            except Exception as e:
+                app.logger.error(f"Error during startup IPT fetch: {str(e)}")
+
+        import threading
+        fetch_thread = threading.Thread(target=_startup_ipt_fetch, daemon=True)
+        fetch_thread.start()
+
         return True
     except Exception as e:
         app.logger.error(f"Error initializing IPT scanner: {str(e)}")
@@ -3209,6 +3544,343 @@ def test_run_iptscanner():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Download Management API Endpoints
+# ---------------------------------------------------------------------------
+
+@app.route('/telegram/webhook', methods=['POST'])
+def telegram_webhook():
+    """Handle Telegram callback button presses for download approvals"""
+    try:
+        data = request.get_json()
+
+        if 'callback_query' in data:
+            callback_query = data['callback_query']
+            callback_data = callback_query['data']
+            message_id = callback_query['message']['message_id']
+            chat_id = callback_query['message']['chat']['id']
+            callback_query_id = callback_query['id']
+
+            # Handle the callback using the telegram handler
+            if not telegram_download_handler:
+                return jsonify({'ok': False, 'error': 'Telegram handler not initialized'}), 500
+
+            result = run_async(telegram_download_handler.handle_callback(
+                callback_data, message_id, chat_id
+            ))
+
+            # Answer the callback query to stop loading animation
+            run_async(telegram_download_handler._answer_callback_query(
+                callback_query_id,
+                "Processing..." if result.get('success') else "Error"
+            ))
+
+            # If approved, execute the download
+            if result.get('action') == 'approved' and download_manager:
+                asyncio.create_task(
+                    download_manager.execute_download(
+                        result['request_id'],
+                        'approved'
+                    )
+                )
+
+        return jsonify({'ok': True})
+    except Exception as e:
+        app.logger.error(f"Error in telegram webhook: {str(e)}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+@app.route('/api/download/pending', methods=['GET'])
+def get_pending_downloads():
+    """Get all pending download approvals"""
+    try:
+        if not download_manager or not state.scanner_obj or not state.scanner_obj.db:
+            return jsonify([])
+
+        pending = state.scanner_obj.db.get_all_pending_downloads()
+        return jsonify(pending)
+    except Exception as e:
+        app.logger.error(f"Error getting pending downloads: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/download/history', methods=['GET'])
+def get_download_history():
+    """Get download history"""
+    try:
+        if not download_manager or not state.scanner_obj or not state.scanner_obj.db:
+            return jsonify([])
+
+        limit = request.args.get('limit', 50, type=int)
+        history = state.scanner_obj.db.get_download_history(limit=limit)
+        return jsonify(history)
+    except Exception as e:
+        app.logger.error(f"Error getting download history: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/download/approve', methods=['POST'])
+def approve_download():
+    """Approve a pending download"""
+    try:
+        data = request.get_json()
+        request_id = data.get('request_id')
+
+        if not request_id:
+            return jsonify({'success': False, 'error': 'request_id required'}), 400
+
+        if not download_manager:
+            return jsonify({'success': False, 'error': 'Download manager not initialized'}), 500
+
+        # Execute the download
+        result = run_async(download_manager.execute_download(request_id, 'approved'))
+
+        return jsonify(result)
+    except Exception as e:
+        app.logger.error(f"Error approving download: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/download/decline', methods=['POST'])
+def decline_download():
+    """Decline a pending download"""
+    try:
+        data = request.get_json()
+        request_id = data.get('request_id')
+
+        if not request_id:
+            return jsonify({'success': False, 'error': 'request_id required'}), 400
+
+        if not state.scanner_obj or not state.scanner_obj.db:
+            return jsonify({'success': False, 'error': 'Database not available'}), 500
+
+        # Delete the pending download
+        state.scanner_obj.db.delete_pending_download(request_id)
+
+        return jsonify({'success': True, 'message': 'Download declined'})
+    except Exception as e:
+        app.logger.error(f"Error declining download: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/download/active', methods=['GET'])
+def get_active_downloads():
+    """Get active downloads from qBittorrent"""
+    try:
+        if not qbt_client:
+            return jsonify([])
+
+        async def _get_torrents():
+            try:
+                torrents = await qbt_client.get_torrents(
+                    category=app.config.get('QBITTORRENT_CATEGORY', 'movies-fel')
+                )
+                return torrents
+            finally:
+                await qbt_client.close()
+
+        torrents = run_async(_get_torrents())
+        return jsonify(torrents)
+    except Exception as e:
+        app.logger.error(f"Error getting active downloads: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/download/check-upgrade', methods=['POST'])
+def check_torrent_upgrade():
+    """Manually check if a torrent is a quality upgrade"""
+    try:
+        data = request.get_json()
+
+        if not data or not data.get('title'):
+            return jsonify({'success': False, 'error': 'Torrent title required'}), 400
+
+        if not download_manager:
+            return jsonify({
+                'success': False,
+                'error': 'Scanner database not yet initialized. Please wait for the Plex scan to complete, or start a manual scan.',
+                'notReady': True
+            }), 503
+
+        # Prepare torrent data in the same format as IPT discoveries
+        torrent_data = {
+            'title': data.get('title'),
+            'link': data.get('link', data.get('magnet_link', '')),
+            'size': data.get('size', 'Unknown')
+        }
+
+        app.logger.info(f"Manual upgrade check requested for: {torrent_data['title']}")
+
+        # Process the torrent through the download manager
+        result = run_async(download_manager.process_ipt_discovery(torrent_data))
+
+        if result.get('status') == 'notification_sent':
+            return jsonify({
+                'success': True,
+                'message': 'Upgrade detected! Check Pending Approvals.',
+                'request_id': result.get('request_id')
+            })
+        elif result.get('status') == 'skipped':
+            return jsonify({
+                'success': True,
+                'message': result.get('reason', 'Not a quality upgrade'),
+                'skipped': True
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'message': result.get('message', 'Check completed'),
+                'result': result
+            })
+
+    except Exception as e:
+        app.logger.error(f"Error checking torrent upgrade: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/qbittorrent/settings', methods=['GET', 'POST'])
+def qbittorrent_settings():
+    """Get or update qBittorrent settings"""
+    if request.method == 'GET':
+        return jsonify({
+            'host': app.config.get('QBITTORRENT_HOST', '10.0.0.63'),
+            'port': app.config.get('QBITTORRENT_PORT', 8080),
+            'username': app.config.get('QBITTORRENT_USERNAME', ''),
+            'category': app.config.get('QBITTORRENT_CATEGORY', 'movies-fel'),
+            'pause_on_add': app.config.get('QBIT_PAUSE_ON_ADD', False),
+            'sequential_download': app.config.get('QBIT_SEQUENTIAL_DOWNLOAD', True)
+        })
+    else:
+        try:
+            data = request.get_json()
+
+            app.config['QBITTORRENT_HOST'] = data.get('host', '10.0.0.63')
+            app.config['QBITTORRENT_PORT'] = data.get('port', 8080)
+            app.config['QBITTORRENT_USERNAME'] = data.get('username', '')
+            app.config['QBITTORRENT_PASSWORD'] = data.get('password', '')
+            app.config['QBITTORRENT_CATEGORY'] = data.get('category', 'movies-fel')
+            app.config['QBIT_PAUSE_ON_ADD'] = data.get('pause_on_add', False)
+            app.config['QBIT_SEQUENTIAL_DOWNLOAD'] = data.get('sequential_download', True)
+
+            # Reinitialize client
+            init_integration_clients()
+
+            # Save settings
+            save_settings()
+
+            return jsonify({'success': True, 'message': 'qBittorrent settings saved'})
+        except Exception as e:
+            app.logger.error(f"Error saving qBittorrent settings: {str(e)}")
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/qbittorrent/test-connection', methods=['POST'])
+def test_qbittorrent_connection():
+    """Test qBittorrent connection"""
+    try:
+        if not qbt_client:
+            return jsonify({'success': False, 'error': 'qBittorrent client not initialized'}), 500
+
+        async def _test():
+            try:
+                result = await qbt_client.test_connection()
+                return result
+            finally:
+                await qbt_client.close()
+
+        result = run_async(_test())
+        return jsonify(result)
+    except Exception as e:
+        app.logger.error(f"Error testing qBittorrent connection: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/radarr/settings', methods=['GET', 'POST'])
+def radarr_settings():
+    """Get or update Radarr settings"""
+    if request.method == 'GET':
+        return jsonify({
+            'url': app.config.get('RADARR_URL', ''),
+            'api_key': app.config.get('RADARR_API_KEY', ''),
+            'root_path': app.config.get('RADARR_ROOT_PATH', '/mnt/user/Media/Movies/')
+        })
+    else:
+        try:
+            data = request.get_json()
+
+            app.config['RADARR_URL'] = data.get('url', '')
+            app.config['RADARR_API_KEY'] = data.get('api_key', '')
+            app.config['RADARR_ROOT_PATH'] = data.get('root_path', '/mnt/user/Media/Movies/')
+
+            # Reinitialize client
+            init_integration_clients()
+
+            # Save settings
+            save_settings()
+
+            return jsonify({'success': True, 'message': 'Radarr settings saved'})
+        except Exception as e:
+            app.logger.error(f"Error saving Radarr settings: {str(e)}")
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/radarr/test-connection', methods=['POST'])
+def test_radarr_connection():
+    """Test Radarr connection"""
+    try:
+        if not radarr_client:
+            return jsonify({'success': False, 'error': 'Radarr client not initialized'}), 500
+
+        async def _test():
+            try:
+                result = await radarr_client.test_connection()
+                return result
+            finally:
+                await radarr_client.close()
+
+        result = run_async(_test())
+        return jsonify(result)
+    except Exception as e:
+        app.logger.error(f"Error testing Radarr connection: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/settings/notifications', methods=['GET', 'POST'])
+def notification_settings():
+    """Get or update notification settings"""
+    if request.method == 'GET':
+        return jsonify({
+            'notify_fel': app.config.get('NOTIFY_FEL', True),
+            'notify_fel_from_p5': app.config.get('NOTIFY_FEL_FROM_P5', True),
+            'notify_fel_from_hdr': app.config.get('NOTIFY_FEL_FROM_HDR', True),
+            'notify_fel_duplicates': app.config.get('NOTIFY_FEL_DUPLICATES', False),
+            'notify_dv': app.config.get('NOTIFY_DV', False),
+            'notify_dv_from_hdr': app.config.get('NOTIFY_DV_FROM_HDR', True),
+            'notify_dv_profile_upgrades': app.config.get('NOTIFY_DV_PROFILE_UPGRADES', True),
+            'notify_atmos': app.config.get('NOTIFY_ATMOS', False),
+            'notify_atmos_only_if_no_atmos': app.config.get('NOTIFY_ATMOS_ONLY_IF_NO_ATMOS', True),
+            'notify_atmos_with_dv_upgrade': app.config.get('NOTIFY_ATMOS_WITH_DV_UPGRADE', True),
+            'notify_resolution': app.config.get('NOTIFY_RESOLUTION', False),
+            'notify_resolution_only_upgrades': app.config.get('NOTIFY_RESOLUTION_ONLY_UPGRADES', True),
+            'notify_only_library_movies': app.config.get('NOTIFY_ONLY_LIBRARY_MOVIES', True),
+            'notify_expire_hours': app.config.get('NOTIFY_EXPIRE_HOURS', 24),
+            'notify_download_start': app.config.get('NOTIFY_DOWNLOAD_START', True),
+            'notify_download_complete': app.config.get('NOTIFY_DOWNLOAD_COMPLETE', True),
+            'notify_download_error': app.config.get('NOTIFY_DOWNLOAD_ERROR', True)
+        })
+    else:
+        try:
+            data = request.get_json()
+
+            # Update all notification settings
+            for key, value in data.items():
+                config_key = key.upper()
+                if config_key in app.config:
+                    app.config[config_key] = value
+
+            # Reinitialize upgrade detector with new settings
+            init_integration_clients()
+
+            # Save settings
+            save_settings()
+
+            return jsonify({'success': True, 'message': 'Notification settings saved'})
+        except Exception as e:
+            app.logger.error(f"Error saving notification settings: {str(e)}")
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+
 if __name__ == "__main__":
     # Start the app
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5001, debug=True)

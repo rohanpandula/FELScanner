@@ -6,6 +6,7 @@ Supports both authenticated and LAN-only (no auth) modes.
 """
 
 import logging
+import asyncio
 import aiohttp
 from typing import Dict, List, Optional, Any
 from urllib.parse import urljoin
@@ -35,8 +36,25 @@ class QBittorrentClient:
 
     async def _ensure_session(self):
         """Ensure HTTP session exists and is authenticated if needed"""
+        # Check if session exists, is open, and is in the current event loop
+        need_new_session = False
+
         if not self.session or self.session.closed:
+            need_new_session = True
+        else:
+            # Check if the session's loop matches the current loop
+            try:
+                current_loop = asyncio.get_running_loop()
+                # If we can't access the session's loop or it's different, recreate
+                if self.session._loop != current_loop:
+                    await self.session.close()
+                    need_new_session = True
+            except:
+                need_new_session = True
+
+        if need_new_session:
             self.session = aiohttp.ClientSession()
+            self._session_cookie = None  # Reset auth cookie
 
         # Authenticate if required and not yet authenticated
         if self._requires_auth and not self._session_cookie:
