@@ -559,7 +559,9 @@
                                     <th class="px-4 py-2 text-left">Size</th>
                                     <th class="px-4 py-2 text-left">S / L</th>
                                     <th class="px-4 py-2 text-left">Added</th>
-                                    <th class="px-4 py-2 text-left">Actions</th>
+                                    <th class="px-3 py-2 text-center">In Radarr</th>
+                                    <th class="px-3 py-2 text-center">P7 FEL</th>
+                                    <th class="px-4 py-2 text-center">Actions</th>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-slate-800">
@@ -570,23 +572,35 @@
                                     <td class="px-4 py-2 text-slate-400">{{ torrent.size || '—' }}</td>
                                     <td class="px-4 py-2 text-slate-400">{{ torrent.seeders }} / {{ torrent.leechers }}</td>
                                     <td class="px-4 py-2 text-slate-500">{{ torrent.added || torrent.addedRaw }}</td>
-                                    <td class="px-4 py-2">
+                                    <td class="px-3 py-2 text-center">
+                                        <span v-if="torrent.statusChecked" :class="torrent.inRadarr ? 'text-emerald-400 text-lg' : 'text-rose-400 text-lg'">
+                                            {{ torrent.inRadarr ? '✓' : '✗' }}
+                                        </span>
+                                        <span v-else class="text-slate-600 text-xs">—</span>
+                                    </td>
+                                    <td class="px-3 py-2 text-center">
+                                        <span v-if="torrent.statusChecked" :class="torrent.hasP7FEL ? 'text-emerald-400 text-lg' : 'text-rose-400 text-lg'">
+                                            {{ torrent.hasP7FEL ? '✓' : '✗' }}
+                                        </span>
+                                        <span v-else class="text-slate-600 text-xs">—</span>
+                                    </td>
+                                    <td class="px-4 py-2 text-center">
                                         <button
                                             @click="checkTorrentUpgrade(torrent)"
                                             class="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
                                             :disabled="torrent.checking"
                                         >
-                                            {{ torrent.checking ? 'Checking...' : 'Check Upgrade' }}
+                                            {{ torrent.checking ? 'Checking...' : 'Check' }}
                                         </button>
                                     </td>
                                 </tr>
                                 <tr v-if="!iptTorrents.length">
-                                    <td colspan="5" class="px-4 py-6 text-center text-slate-500">No cached torrents available.</td>
+                                    <td colspan="7" class="px-4 py-6 text-center text-slate-500">No cached torrents available.</td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
-                    <p class="mt-3 text-xs text-slate-500">Click "Check Upgrade" to analyze if a torrent is a quality upgrade for your library. If it is, it will appear in "Pending Approvals" above.</p>
+                    <p class="mt-3 text-xs text-slate-500">Green ✓ means yes, Red ✗ means no. Click "Check" to analyze if a torrent is a quality upgrade and add to "Pending Approvals".</p>
                 </section>
             </div>
         </main>

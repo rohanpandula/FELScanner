@@ -2848,6 +2848,59 @@ def iptscanner_settings():
         return jsonify({'success': False, 'error': str(exc)}), 500
                 
 
+def _enrich_torrent_with_status(torrent: dict) -> dict:
+    """Add status indicators to a torrent (in Radarr, has P7 FEL)"""
+    enriched = torrent.copy()
+    enriched['inRadarr'] = False
+    enriched['hasP7FEL'] = False
+    enriched['statusChecked'] = False
+
+    try:
+        if not upgrade_detector or not radarr_client or not state.scanner_obj:
+            return enriched
+
+        # Parse torrent title to extract movie info
+        title_str = torrent.get('name', '')
+        parsed = upgrade_detector.parse_torrent_title(title_str)
+
+        if not parsed or not parsed.get('title'):
+            return enriched
+
+        movie_title = parsed.get('title')
+        movie_year = parsed.get('year')
+
+        # Check if movie is in Radarr
+        async def _check_radarr():
+            try:
+                movie = await radarr_client.search_movie(movie_title, movie_year)
+                return movie is not None
+            except:
+                return False
+
+        in_radarr = run_async(_check_radarr())
+        enriched['inRadarr'] = in_radarr
+
+        # Check if movie already has P7 FEL in Plex
+        if movie_year:
+            movie_data = state.scanner_obj.db.find_movie_by_title_year(movie_title, movie_year)
+        else:
+            movie_data = state.scanner_obj.db.find_movie_by_title(movie_title)
+
+        if movie_data:
+            # Check if current quality is P7 FEL
+            dv_profile = movie_data.get('dv_profile')
+            is_fel = movie_data.get('dv_fel') or movie_data.get('is_fel', False)
+
+            if dv_profile == 7 and is_fel:
+                enriched['hasP7FEL'] = True
+
+        enriched['statusChecked'] = True
+
+    except Exception as e:
+        app.logger.error(f"Error enriching torrent status: {str(e)}")
+
+    return enriched
+
 @app.route('/api/iptscanner/torrents', methods=['GET'])
 def iptscanner_torrents():
     try:
@@ -2861,8 +2914,11 @@ def iptscanner_torrents():
             if not torrents:
                 torrents = _fetch_ipt_results(config, force=True)
 
+        # Enrich each torrent with status indicators
+        enriched_torrents = [_enrich_torrent_with_status(t) for t in torrents]
+
         return jsonify({
-            'torrents': torrents,
+            'torrents': enriched_torrents,
             'searchTerm': config.get('searchTerm', ''),
             'lastCheck': config.get('lastUpdateTime')
         })
