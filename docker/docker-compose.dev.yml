@@ -1,0 +1,68 @@
+# Development overrides for docker-compose
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+version: '3.8'
+
+services:
+  postgres:
+    ports:
+      - "5432:5432"  # Expose for local debugging
+    environment:
+      POSTGRES_PASSWORD: dev_password_change_me
+
+  redis:
+    ports:
+      - "6379:6379"  # Expose for local debugging
+    command: redis-server --appendonly yes  # No password in dev
+
+  api:
+    build:
+      target: development
+    environment:
+      DEBUG: "true"
+      LOG_LEVEL: DEBUG
+      RELOAD: "true"  # Auto-reload on code changes
+    volumes:
+      - ../services/api/app:/app/app:ro  # Mount source for hot reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+
+  ipt-scraper:
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: debug
+    volumes:
+      - ../services/ipt-scraper/src:/app/src:ro  # Mount source for hot reload
+    command: npm run dev
+
+  frontend:
+    build:
+      target: development
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    volumes:
+      - ../services/frontend/src:/app/src:ro  # Mount source for hot reload
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"  # Vite dev server
+
+  # Development tools
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: felscanner-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@felscanner.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    networks:
+      - felscanner-network
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: felscanner-redis-commander
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8081:8081"
+    networks:
+      - felscanner-network

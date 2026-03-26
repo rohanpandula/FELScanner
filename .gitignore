@@ -1,0 +1,66 @@
+# Environment files with real credentials
+.env
+.env.*
+!.env.example
+!.env.production.example
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes / data
+data/
+*.log
+
+# Claude local settings (contains SSH commands with real IPs)
+.claude/settings.local.json
+.claude/todos.json
+
+# Saved web pages with personal data
+*.mhtml
+
+# Test results with credentials
+TEST_RESULTS.md
+
+# Landing page build artifacts
+landing/
+
+# Temporary files
+*.save
+*.bak
+*.tmp
+
+# Dev artifacts and exports
+data_exports/
+mockups/
+AGENTS.md
+GEMINI.md
+PROGRESS.md
+UX_IMPROVEMENT_PLAN.md
+
+# Claude skills (local only)
+.claude/skills/
+.interface-design/

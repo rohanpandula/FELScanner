@@ -1,0 +1,63 @@
+# FELScanner v2 API Requirements
+# FastAPI and Server
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# Database
+sqlalchemy[asyncio]==2.0.25
+asyncpg==0.29.0
+alembic==1.13.1
+psycopg2-binary==2.9.9  # For Alembic migrations
+
+# Redis
+redis[hiredis]==5.0.1
+aioredis==2.0.1
+
+# Configuration
+pydantic==2.5.3
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+
+# Background Tasks
+apscheduler==3.10.4
+
+# HTTP Client
+aiohttp==3.9.1
+httpx~=0.25.2
+
+# Plex Integration
+plexapi==4.15.6
+
+# XML Parsing
+lxml==5.1.0
+xmltodict==0.13.0
+
+# Telegram
+python-telegram-bot==20.7
+
+# Monitoring
+prometheus-client==0.19.0
+sentry-sdk[fastapi]==1.39.2
+
+# Logging
+structlog==23.3.0
+python-json-logger==2.0.7
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2023.3
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+faker==22.0.0
+aiosqlite==0.19.0  # For testing with SQLite
+
+# Code Quality
+black==23.12.1
+isort==5.13.2
+mypy==1.8.0
+flake8==7.0.0

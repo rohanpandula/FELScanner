@@ -1,0 +1,331 @@
+version: '3.8'
+
+services:
+  # ============================================================================
+  # PostgreSQL Database
+  # Primary data store for movies, downloads, settings, scans
+  # ============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: felscanner-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-felscanner}
+      POSTGRES_USER: ${POSTGRES_USER:-felscanner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-felscanner_dev_password}
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=en_US.UTF-8"
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-felscanner} -d ${POSTGRES_DB:-felscanner}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - felscanner-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ============================================================================
+  # Redis
+  # Task queue, caching, and session storage
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: felscanner-redis
+    restart: unless-stopped
+    command: >
+      sh -c "if [ -n \"$$REDIS_PASSWORD\" ]; then
+        redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\";
+      else
+        redis-server --appendonly yes;
+      fi"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - felscanner-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # ============================================================================
+  # FastAPI Backend
+  # Main application server with async architecture
+  # ============================================================================
+  api:
+    build:
+      context: ../services/api
+      dockerfile: Dockerfile
+      args:
+        - PYTHON_VERSION=3.11
+    image: felscanner-api:latest
+    container_name: felscanner-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Application
+      APP_NAME: ${APP_NAME:-FELScanner}
+      DEBUG: ${DEBUG:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+      # Database
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-felscanner}:${POSTGRES_PASSWORD:-felscanner_dev_password}@postgres:5432/${POSTGRES_DB:-felscanner}
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-20}
+      DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-10}
+
+      # Redis
+      REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/0
+
+      # Plex
+      PLEX_URL: ${PLEX_URL}
+      PLEX_TOKEN: ${PLEX_TOKEN}
+      LIBRARY_NAME: ${LIBRARY_NAME:-Movies}
+
+      # FFProbe
+      FFPROBE_PATH: ${FFPROBE_PATH:-/usr/bin/ffprobe}
+
+      # Telegram
+      TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-false}
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+
+      # qBittorrent
+      QBITTORRENT_HOST: ${QBITTORRENT_HOST:-}
+      QBITTORRENT_PORT: ${QBITTORRENT_PORT:-8080}
+      QBITTORRENT_USERNAME: ${QBITTORRENT_USERNAME:-admin}
+      QBITTORRENT_PASSWORD: ${QBITTORRENT_PASSWORD:-}
+      QBITTORRENT_CATEGORY: ${QBITTORRENT_CATEGORY:-movies-fel}
+
+      # Radarr
+      RADARR_URL: ${RADARR_URL:-}
+      RADARR_API_KEY: ${RADARR_API_KEY:-}
+      RADARR_ROOT_PATH: ${RADARR_ROOT_PATH:-}
+
+      # IPT Scraper
+      IPT_SCRAPER_URL: ${IPT_SCRAPER_URL:-http://ipt-scraper:3000}
+
+      # qbitcopy (download pipeline)
+      QBITCOPY_URL: ${QBITCOPY_URL:-}
+
+      # Background Tasks
+      SCAN_FREQUENCY_HOURS: ${SCAN_FREQUENCY_HOURS:-24}
+      MONITOR_INTERVAL_MINUTES: ${MONITOR_INTERVAL_MINUTES:-1}
+      CONNECTION_CHECK_INTERVAL_MINUTES: ${CONNECTION_CHECK_INTERVAL_MINUTES:-15}
+
+      # File Storage
+      DATA_DIR: /data
+      EXPORTS_DIR: /data/exports
+
+      # Monitoring
+      PROMETHEUS_ENABLED: ${PROMETHEUS_ENABLED:-true}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+
+      # CORS
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:80}
+    volumes:
+      - api_data:/data
+      # Optional: Mount ffprobe if not in container
+      # - /usr/local/bin/ffprobe:/usr/bin/ffprobe:ro
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - felscanner-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ============================================================================
+  # IPT Scraper Microservice
+  # Node.js service for IPTorrents scraping via FlareSolverr
+  # ============================================================================
+  ipt-scraper:
+    build:
+      context: ../services/ipt-scraper
+      dockerfile: Dockerfile
+      args:
+        - NODE_VERSION=18
+    image: felscanner-ipt-scraper:latest
+    container_name: felscanner-ipt-scraper
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3000
+
+      # FlareSolverr
+      FLARESOLVERR_URL: ${FLARESOLVERR_URL:-http://flaresolverr:8191}
+
+      # IPTorrents Credentials
+      IPT_UID: ${IPT_UID:-}
+      IPT_PASS: ${IPT_PASS:-}
+      IPT_CF_CLEARANCE: ${IPT_CF_CLEARANCE:-}
+
+      # Multi-page scanning (optional, defaults to 1)
+      # SCAN_PAGES: 3
+      IPT_HIDE_CATS: ${IPT_HIDE_CATS:-0}
+      IPT_HIDE_TOP: ${IPT_HIDE_TOP:-0}
+      IPT_SEARCH_URL: ${IPT_SEARCH_URL:-https://iptorrents.com/t?q=BL%2BEL%2BRPU&qf=adv#torrents}
+
+      # Scraper Config
+      SEARCH_TERM: ${IPT_SEARCH_TERM:-BL+EL+RPU}
+      HEADLESS: ${IPT_HEADLESS:-true}
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+      # Data Paths
+      DATA_PATH: /data
+    volumes:
+      - ipt_data:/data
+    ports:
+      - "${IPT_SCRAPER_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - felscanner-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ============================================================================
+  # FlareSolverr
+  # Cloudflare bypass for IPTorrents access
+  # ============================================================================
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: felscanner-flaresolverr
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: ${FLARESOLVERR_LOG_LEVEL:-info}
+      LOG_HTML: ${FLARESOLVERR_LOG_HTML:-false}
+      CAPTCHA_SOLVER: ${FLARESOLVERR_CAPTCHA_SOLVER:-none}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "${FLARESOLVERR_PORT:-8191}:8191"
+    networks:
+      - felscanner-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  # ============================================================================
+  # Frontend (Vue 3 + Vite)
+  # Production build served via Nginx
+  # ============================================================================
+  frontend:
+    build:
+      context: ../services/frontend
+      dockerfile: Dockerfile
+      args:
+        - NODE_VERSION=18
+        - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://localhost:8000}
+    image: felscanner-frontend:latest
+    container_name: felscanner-frontend
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NGINX_HOST: ${FRONTEND_NGINX_HOST:-localhost}
+      NGINX_PORT: ${FRONTEND_NGINX_PORT:-80}
+    ports:
+      - "${FRONTEND_PORT:-5173}:8080"
+    networks:
+      - felscanner-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # ============================================================================
+  # Nginx Reverse Proxy (Optional)
+  # Unified entry point for API + Frontend with SSL support
+  # ============================================================================
+  nginx:
+    image: nginx:alpine
+    container_name: felscanner-nginx
+    restart: unless-stopped
+    profiles:
+      - production  # Only start with --profile production
+    depends_on:
+      - api
+      - frontend
+    volumes:
+      - ../deployment/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../deployment/nginx/conf.d:/etc/nginx/conf.d:ro
+      # SSL certificates (if using HTTPS)
+      # - ./certs:/etc/nginx/certs:ro
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    networks:
+      - felscanner-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ============================================================================
+# Named Volumes
+# ============================================================================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  api_data:
+    driver: local
+  ipt_data:
+    driver: local
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  felscanner-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

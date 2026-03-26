@@ -1,0 +1,35 @@
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Development
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage/
+.nyc_output/
+
+# Logs
+*.log
+logs/
+
+# Data (volume-mounted)
+/data/
+
+# Documentation
+README.md
+docs/

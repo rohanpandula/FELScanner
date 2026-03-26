@@ -1,0 +1,183 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: felscanner-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-felscanner}
+      POSTGRES_USER: ${POSTGRES_USER:-felscanner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=en_US.UTF-8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-felscanner}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - felscanner
+
+  redis:
+    image: redis:7-alpine
+    container_name: felscanner-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - felscanner
+
+  api:
+    build:
+      context: ../services/api
+      dockerfile: Dockerfile
+    container_name: felscanner-api
+    environment:
+      # Database
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-felscanner}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-felscanner}
+
+      # Redis
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+
+      # Plex
+      PLEX_URL: ${PLEX_URL:?PLEX_URL is required}
+      PLEX_TOKEN: ${PLEX_TOKEN:?PLEX_TOKEN is required}
+      PLEX_LIBRARY_NAME: ${PLEX_LIBRARY_NAME:-Movies}
+
+      # Collections
+      COLLECTION_DV_P7: ${COLLECTION_DV_P7:-Dolby Vision - Profile 7}
+      COLLECTION_DV_FEL: ${COLLECTION_DV_FEL:-Dolby Vision - FEL}
+      COLLECTION_ATMOS: ${COLLECTION_ATMOS:-Dolby Atmos}
+
+      # qBittorrent
+      QBITTORRENT_URL: ${QBITTORRENT_URL:?QBITTORRENT_URL is required}
+      QBITTORRENT_USERNAME: ${QBITTORRENT_USERNAME:?QBITTORRENT_USERNAME is required}
+      QBITTORRENT_PASSWORD: ${QBITTORRENT_PASSWORD:?QBITTORRENT_PASSWORD is required}
+
+      # Radarr
+      RADARR_URL: ${RADARR_URL:?RADARR_URL is required}
+      RADARR_API_KEY: ${RADARR_API_KEY:?RADARR_API_KEY is required}
+
+      # Telegram
+      TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-true}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+
+      # IPT
+      IPT_ENABLED: ${IPT_ENABLED:-true}
+      IPT_SCRAPER_URL: ${IPT_SCRAPER_URL:-http://ipt-scraper:3000}
+
+      # FlareSolverr
+      FLARESOLVERR_URL: ${FLARESOLVERR_URL:-http://flaresolverr:8191}
+
+      # App Settings
+      AUTO_START_MODE: ${AUTO_START_MODE:-disabled}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ${PLEX_MEDIA_PATH:-/media}:/media:ro
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - felscanner
+
+  ipt-scraper:
+    build:
+      context: ../services/ipt-scraper
+      dockerfile: Dockerfile
+    container_name: felscanner-ipt-scraper
+    environment:
+      IPT_URL: ${IPT_URL:?IPT_URL is required}
+      IPT_UID: ${IPT_UID:?IPT_UID is required}
+      IPT_PASS: ${IPT_PASS:?IPT_PASS is required}
+      FLARESOLVERR_URL: ${FLARESOLVERR_URL:-http://flaresolverr:8191}
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - ipt_data:/app/data
+    ports:
+      - "${IPT_SCRAPER_PORT:-3000}:3000"
+    depends_on:
+      - flaresolverr
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - felscanner
+
+  frontend:
+    build:
+      context: ../services/frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+    container_name: felscanner-frontend
+    ports:
+      - "${FRONTEND_PORT:-5173}:8080"
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - felscanner
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: felscanner-flaresolverr
+    environment:
+      LOG_LEVEL: ${FLARESOLVERR_LOG_LEVEL:-info}
+      LOG_HTML: false
+      CAPTCHA_SOLVER: none
+    ports:
+      - "${FLARESOLVERR_PORT:-8191}:8191"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8191/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - felscanner
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  ipt_data:
+    driver: local
+
+networks:
+  felscanner:
+    driver: bridge

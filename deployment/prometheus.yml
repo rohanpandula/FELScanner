@@ -1,0 +1,51 @@
+# Prometheus configuration for FELScanner v2
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'felscanner'
+    environment: 'production'
+
+# Scrape configurations
+scrape_configs:
+  # FELScanner API
+  - job_name: 'felscanner-api'
+    static_configs:
+      - targets: ['api:8000']
+        labels:
+          service: 'api'
+          app: 'felscanner'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Node Exporter (optional - for system metrics)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          service: 'node-exporter'
+
+  # PostgreSQL Exporter (optional - for database metrics)
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+        labels:
+          service: 'postgres'
+
+  # Redis Exporter (optional - for Redis metrics)
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+        labels:
+          service: 'redis'
+
+# Alerting (optional)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['alertmanager:9093']
+
+# Rule files (optional)
+# rule_files:
+#   - 'alerts/*.yml'
