@@ -2,12 +2,16 @@ version: '3.8'
 
 services:
   # ============================================================================
-  # PostgreSQL Database
-  # Primary data store for movies, downloads, settings, scans
+  # Storage (Postgres 15 + Redis 7 in one container)
+  # DNS aliases `postgres` and `redis` preserved so existing env vars keep
+  # working without an api-side rename.
   # ============================================================================
-  postgres:
-    image: postgres:15-alpine
-    container_name: felscanner-postgres
+  storage:
+    build:
+      context: ./storage
+      dockerfile: Dockerfile
+    image: felscanner-storage:latest
+    container_name: felscanner-storage
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-felscanner}
@@ -15,57 +19,23 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-felscanner_dev_password}
       POSTGRES_INITDB_ARGS: "-E UTF8 --locale=en_US.UTF-8"
       PGDATA: /var/lib/postgresql/data/pgdata
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - redis_data:/data/redis
       - ../database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-felscanner} -d ${POSTGRES_DB:-felscanner}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+      - "${REDIS_PORT:-6379}:6379"
     networks:
-      - felscanner-network
+      felscanner-network:
+        aliases:
+          - postgres
+          - redis
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
-        max-file: "3"
-
-  # ============================================================================
-  # Redis
-  # Task queue, caching, and session storage
-  # ============================================================================
-  redis:
-    image: redis:7-alpine
-    container_name: felscanner-redis
-    restart: unless-stopped
-    command: >
-      sh -c "if [ -n \"$$REDIS_PASSWORD\" ]; then
-        redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\";
-      else
-        redis-server --appendonly yes;
-      fi"
-    environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
-    volumes:
-      - redis_data:/data
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
-    networks:
-      - felscanner-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "5m"
         max-file: "3"
 
   # ============================================================================
@@ -82,9 +52,7 @@ services:
     container_name: felscanner-api
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
+      storage:
         condition: service_healthy
     environment:
       # Application
@@ -126,8 +94,17 @@ services:
       RADARR_API_KEY: ${RADARR_API_KEY:-}
       RADARR_ROOT_PATH: ${RADARR_ROOT_PATH:-}
 
-      # IPT Scraper
-      IPT_SCRAPER_URL: ${IPT_SCRAPER_URL:-http://ipt-scraper:3000}
+      # IPT Scraper — now in-process. Point at a FlareSolverr instance
+      # reachable from this container (another container, LAN host, etc.).
+      FLARESOLVERR_URL: ${FLARESOLVERR_URL:-http://flaresolverr:8191}
+      IPT_UID: ${IPT_UID:-}
+      IPT_PASS: ${IPT_PASS:-}
+      IPT_CF_CLEARANCE: ${IPT_CF_CLEARANCE:-}
+      IPT_SEARCH_URL: ${IPT_SEARCH_URL:-https://iptorrents.com/t?q=BL%2BEL%2BRPU&qf=adv#torrents}
+      IPT_SEARCH_TERM: ${IPT_SEARCH_TERM:-BL+EL+RPU}
+      IPT_HIDE_CATS: ${IPT_HIDE_CATS:-0}
+      IPT_HIDE_TOP: ${IPT_HIDE_TOP:-0}
+      SCAN_PAGES: ${SCAN_PAGES:-1}
 
       # qbitcopy (download pipeline)
       QBITCOPY_URL: ${QBITCOPY_URL:-}
@@ -161,92 +138,21 @@ services:
       start_period: 40s
     networks:
       - felscanner-network
+      # Optional: attach to a LAN-bridged network (e.g. Unraid `br0` macvlan,
+      # or a custom macvlan) so the api can reach Plex / Radarr / qBittorrent
+      # containers running with their own LAN IPs. Uncomment the block below,
+      # set `API_BR0_IP` in your .env to a free IP on that network, and
+      # declare `br0` as `external: true` in the `networks:` section at the
+      # bottom of this file.
+      #
+      # felscanner-network:
+      # br0:
+      #   ipv4_address: ${API_BR0_IP:-}
     logging:
       driver: "json-file"
       options:
         max-size: "50m"
         max-file: "5"
-
-  # ============================================================================
-  # IPT Scraper Microservice
-  # Node.js service for IPTorrents scraping via FlareSolverr
-  # ============================================================================
-  ipt-scraper:
-    build:
-      context: ../services/ipt-scraper
-      dockerfile: Dockerfile
-      args:
-        - NODE_VERSION=18
-    image: felscanner-ipt-scraper:latest
-    container_name: felscanner-ipt-scraper
-    restart: unless-stopped
-    environment:
-      NODE_ENV: ${NODE_ENV:-production}
-      PORT: 3000
-
-      # FlareSolverr
-      FLARESOLVERR_URL: ${FLARESOLVERR_URL:-http://flaresolverr:8191}
-
-      # IPTorrents Credentials
-      IPT_UID: ${IPT_UID:-}
-      IPT_PASS: ${IPT_PASS:-}
-      IPT_CF_CLEARANCE: ${IPT_CF_CLEARANCE:-}
-
-      # Multi-page scanning (optional, defaults to 1)
-      # SCAN_PAGES: 3
-      IPT_HIDE_CATS: ${IPT_HIDE_CATS:-0}
-      IPT_HIDE_TOP: ${IPT_HIDE_TOP:-0}
-      IPT_SEARCH_URL: ${IPT_SEARCH_URL:-https://iptorrents.com/t?q=BL%2BEL%2BRPU&qf=adv#torrents}
-
-      # Scraper Config
-      SEARCH_TERM: ${IPT_SEARCH_TERM:-BL+EL+RPU}
-      HEADLESS: ${IPT_HEADLESS:-true}
-
-      # Logging
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-
-      # Data Paths
-      DATA_PATH: /data
-    volumes:
-      - ipt_data:/data
-    ports:
-      - "${IPT_SCRAPER_PORT:-3000}:3000"
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
-    networks:
-      - felscanner-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "20m"
-        max-file: "3"
-
-  # ============================================================================
-  # FlareSolverr
-  # Cloudflare bypass for IPTorrents access
-  # ============================================================================
-  flaresolverr:
-    image: ghcr.io/flaresolverr/flaresolverr:latest
-    container_name: felscanner-flaresolverr
-    restart: unless-stopped
-    environment:
-      LOG_LEVEL: ${FLARESOLVERR_LOG_LEVEL:-info}
-      LOG_HTML: ${FLARESOLVERR_LOG_HTML:-false}
-      CAPTCHA_SOLVER: ${FLARESOLVERR_CAPTCHA_SOLVER:-none}
-      TZ: ${TZ:-UTC}
-    ports:
-      - "${FLARESOLVERR_PORT:-8191}:8191"
-    networks:
-      - felscanner-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "2"
 
   # ============================================================================
   # Frontend (Vue 3 + Vite)
@@ -317,8 +223,6 @@ volumes:
     driver: local
   api_data:
     driver: local
-  ipt_data:
-    driver: local
 
 # ============================================================================
 # Networks
@@ -329,3 +233,8 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/16
+  # Optional external network (e.g. Unraid `br0` macvlan). Only required if
+  # you uncomment the `br0:` block under the `api` service above. Leave
+  # commented otherwise.
+  # br0:
+  #   external: true

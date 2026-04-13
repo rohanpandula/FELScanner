@@ -1,299 +1,276 @@
 <template>
-  <div class="metadata-explorer space-y-6">
+  <div class="metadata-explorer space-y-7 anim-fade-up">
+    <!-- Header -->
+    <header class="flex items-end justify-between flex-wrap gap-4">
+      <div>
+        <div class="eyebrow mb-2">Library Index</div>
+        <h1 class="section-title">Metadata</h1>
+        <p class="section-sub mt-1">Every Dolby Vision track, every audio layer, every frame accounted for.</p>
+      </div>
+      <div class="count-chip">
+        <span class="tabular-nums">{{ moviesStore.movies.length }}</span>
+        <span class="divider-slash">/</span>
+        <span class="tabular-nums">{{ moviesStore.total }}</span>
+        <span class="muted ml-1">movies</span>
+      </div>
+    </header>
+
     <!-- Search and Filters -->
     <div class="card">
-      <div class="space-y-4">
-        <!-- Search Input -->
+      <div class="search-row">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+          <circle cx="11" cy="11" r="7" />
+          <path stroke-linecap="round" d="m20 20-3-3" />
+        </svg>
+        <input
+          v-model="searchQuery"
+          type="text"
+          placeholder="Search by title"
+          class="search-input"
+          @keyup.enter="handleSearch"
+        />
+        <button
+          v-if="moviesStore.hasFilters"
+          @click="clearFilters"
+          class="btn btn-ghost btn-sm"
+        >
+          Clear filters
+        </button>
+      </div>
+
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-5">
         <div>
-          <input
-            v-model="searchQuery"
-            type="text"
-            placeholder="Search movies by title..."
-            class="input"
-            @keyup.enter="handleSearch"
-          />
+          <label class="label">DV profile</label>
+          <select v-model="filters.dv_profile" @change="applyFilters" class="select">
+            <option :value="undefined">All</option>
+            <option value="Profile 7">Profile 7</option>
+            <option value="Profile 5">Profile 5</option>
+            <option value="Profile 4">Profile 4</option>
+          </select>
         </div>
-
-        <!-- Filters -->
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div>
-            <label class="label">DV Profile</label>
-            <select v-model="filters.dv_profile" @change="applyFilters" class="input">
-              <option :value="undefined">All</option>
-              <option value="Profile 7">Profile 7</option>
-              <option value="Profile 5">Profile 5</option>
-              <option value="Profile 4">Profile 4</option>
-            </select>
-          </div>
-
-          <div>
-            <label class="label">FEL</label>
-            <select v-model="filters.dv_fel" @change="applyFilters" class="input">
-              <option :value="undefined">All</option>
-              <option :value="true">Yes</option>
-              <option :value="false">No</option>
-            </select>
-          </div>
-
-          <div>
-            <label class="label">Atmos</label>
-            <select v-model="filters.has_atmos" @change="applyFilters" class="input">
-              <option :value="undefined">All</option>
-              <option :value="true">Yes</option>
-              <option :value="false">No</option>
-            </select>
-          </div>
-
-          <div>
-            <label class="label">Resolution</label>
-            <select v-model="filters.resolution" @change="applyFilters" class="input">
-              <option :value="undefined">All</option>
-              <option value="4K">4K</option>
-              <option value="1080p">1080p</option>
-              <option value="720p">720p</option>
-            </select>
-          </div>
+        <div>
+          <label class="label">FEL</label>
+          <select v-model="filters.dv_fel" @change="applyFilters" class="select">
+            <option :value="undefined">All</option>
+            <option :value="true">Yes</option>
+            <option :value="false">No</option>
+          </select>
         </div>
-
-        <div class="flex justify-between items-center">
-          <button
-            v-if="moviesStore.hasFilters"
-            @click="clearFilters"
-            class="btn btn-secondary"
-          >
-            Clear Filters
-          </button>
-          <div class="text-sm text-gray-600">
-            Showing {{ moviesStore.movies.length }} of {{ moviesStore.total }} movies
-          </div>
+        <div>
+          <label class="label">Atmos</label>
+          <select v-model="filters.has_atmos" @change="applyFilters" class="select">
+            <option :value="undefined">All</option>
+            <option :value="true">Yes</option>
+            <option :value="false">No</option>
+          </select>
+        </div>
+        <div>
+          <label class="label">Resolution</label>
+          <select v-model="filters.resolution" @change="applyFilters" class="select">
+            <option :value="undefined">All</option>
+            <option value="4K">4K</option>
+            <option value="1080p">1080p</option>
+            <option value="720p">720p</option>
+          </select>
         </div>
       </div>
     </div>
 
     <!-- Movies Table -->
-    <div v-if="moviesStore.isLoading" class="text-center py-12">
-      <div class="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-      <p class="mt-4 text-gray-600">Loading movies...</p>
+    <div v-if="moviesStore.isLoading" class="card text-center py-14">
+      <div class="spinner mx-auto"></div>
+      <p class="mt-4 muted">Loading movies…</p>
     </div>
 
-    <div v-else-if="!moviesStore.hasMovies" class="card text-center py-12">
-      <p class="text-gray-600">No movies found</p>
+    <div v-else-if="!moviesStore.hasMovies" class="card text-center py-16">
+      <p class="muted">No movies match those filters.</p>
     </div>
 
-    <div v-else class="card overflow-x-auto">
-      <table class="min-w-full divide-y divide-gray-700">
-        <thead style="background: rgba(31, 41, 55, 0.6);">
-          <tr>
-            <th class="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #818cf8;">Title</th>
-            <th class="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #818cf8;">Year</th>
-            <th class="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #818cf8;">DV Profile</th>
-            <th class="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #818cf8;">FEL</th>
-            <th class="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #818cf8;">Atmos</th>
-            <th class="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #818cf8;">Resolution</th>
-            <th class="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #818cf8;">Codec</th>
-            <th class="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #818cf8;">Actions</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-gray-700" style="background: rgba(20, 20, 30, 0.4);">
-          <tr
-            v-for="movie in moviesStore.movies"
-            :key="movie.id"
-            class="hover:bg-[rgba(45,45,61,0.4)] transition-colors cursor-pointer"
-          >
-            <td class="px-6 py-4 whitespace-nowrap" @click="openMovieDetails(movie.id)">
-              <div class="text-sm font-medium" style="color: #e5e5e5;">{{ movie.title }}</div>
-            </td>
-            <td class="px-6 py-4 whitespace-nowrap" @click="openMovieDetails(movie.id)">
-              <div class="text-sm" style="color: #9ca3af;">{{ movie.year || '-' }}</div>
-            </td>
-            <td class="px-6 py-4 whitespace-nowrap" @click="openMovieDetails(movie.id)">
-              <span v-if="movie.dv_profile" class="inline-flex px-3 py-1 text-xs font-semibold rounded-full" style="background: rgba(124, 58, 237, 0.2); color: #a78bfa;">
-                {{ movie.dv_profile }}
-              </span>
-              <span v-else class="text-sm" style="color: #9ca3af;">-</span>
-            </td>
-            <td class="px-6 py-4 whitespace-nowrap" @click="openMovieDetails(movie.id)">
-              <span v-if="movie.dv_fel" class="inline-flex px-3 py-1 text-xs font-semibold rounded-full" style="background: rgba(99, 102, 241, 0.2); color: #818cf8;">
-                FEL
-              </span>
-              <span v-else class="text-sm" style="color: #9ca3af;">-</span>
-            </td>
-            <td class="px-6 py-4 whitespace-nowrap" @click="openMovieDetails(movie.id)">
-              <span v-if="movie.has_atmos" class="inline-flex px-3 py-1 text-xs font-semibold rounded-full" style="background: rgba(16, 185, 129, 0.2); color: #10b981;">
-                Atmos
-              </span>
-              <span v-else class="text-sm" style="color: #9ca3af;">-</span>
-            </td>
-            <td class="px-6 py-4 whitespace-nowrap" @click="openMovieDetails(movie.id)">
-              <div class="text-sm" style="color: #9ca3af;">{{ movie.resolution || '-' }}</div>
-            </td>
-            <td class="px-6 py-4 whitespace-nowrap" @click="openMovieDetails(movie.id)">
-              <div class="text-sm" style="color: #9ca3af;">{{ movie.video_codec || '-' }}</div>
-            </td>
-            <td class="px-6 py-4 whitespace-nowrap">
-              <button
-                @click="openMovieDetails(movie.id)"
-                class="text-xs px-3 py-1.5 rounded font-semibold transition-all"
-                style="background: rgba(99, 102, 241, 0.15); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.3);"
-                @mouseover="$event.target.style.background = 'rgba(99, 102, 241, 0.25)'"
-                @mouseout="$event.target.style.background = 'rgba(99, 102, 241, 0.15)'"
-              >
-                Details
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+    <div v-else class="card p-0 overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>Year</th>
+              <th>DV</th>
+              <th>FEL</th>
+              <th>Atmos</th>
+              <th>Res</th>
+              <th>Codec</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="movie in moviesStore.movies"
+              :key="movie.id"
+              class="cursor-pointer"
+              @click="openMovieDetails(movie.id)"
+            >
+              <td class="font-medium">{{ movie.title }}</td>
+              <td class="muted tabular-nums">{{ movie.year || '—' }}</td>
+              <td>
+                <span v-if="movie.dv_profile" class="badge badge-p7">
+                  {{ movie.dv_profile }}
+                </span>
+                <span v-else class="muted">—</span>
+              </td>
+              <td>
+                <span v-if="movie.dv_fel" class="badge badge-fel">FEL</span>
+                <span v-else class="muted">—</span>
+              </td>
+              <td>
+                <span v-if="movie.has_atmos" class="badge badge-atmos">Atmos</span>
+                <span v-else class="muted">—</span>
+              </td>
+              <td class="muted">{{ movie.resolution || '—' }}</td>
+              <td class="muted font-mono text-xs">{{ movie.video_codec || '—' }}</td>
+              <td>
+                <button class="btn btn-ghost btn-sm" @click.stop="openMovieDetails(movie.id)">
+                  Details →
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <!-- Pagination -->
-    <div v-if="moviesStore.totalPages > 1" class="card">
-      <div class="flex items-center justify-between">
-        <button
-          @click="previousPage"
-          :disabled="moviesStore.page === 1"
-          class="btn btn-secondary"
-        >
-          Previous
-        </button>
+    <div v-if="moviesStore.totalPages > 1" class="flex items-center justify-between">
+      <button
+        @click="previousPage"
+        :disabled="moviesStore.page === 1"
+        class="btn btn-secondary"
+      >
+        ← Previous
+      </button>
 
-        <div class="flex items-center space-x-2">
-          <span class="text-sm text-gray-600">
-            Page {{ moviesStore.page }} of {{ moviesStore.totalPages }}
-          </span>
-        </div>
+      <span class="eyebrow">
+        Page {{ moviesStore.page }} / {{ moviesStore.totalPages }}
+      </span>
 
-        <button
-          @click="nextPage"
-          :disabled="moviesStore.page >= moviesStore.totalPages"
-          class="btn btn-secondary"
-        >
-          Next
-        </button>
-      </div>
+      <button
+        @click="nextPage"
+        :disabled="moviesStore.page >= moviesStore.totalPages"
+        class="btn btn-secondary"
+      >
+        Next →
+      </button>
     </div>
 
     <!-- Movie Details Modal -->
     <teleport to="body">
-      <div
-        v-if="showDetailsModal"
-        class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
-        @click="closeModal"
-      >
+      <transition name="overlay">
         <div
-          class="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto"
-          @click.stop
+          v-if="showDetailsModal"
+          class="overlay"
+          @click="closeModal"
         >
-          <div class="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-            <h2 class="text-2xl font-bold">{{ metadataStore.currentMovie?.title }}</h2>
-            <button @click="closeModal" class="text-gray-500 hover:text-gray-700 text-2xl">
-              ×
-            </button>
-          </div>
+          <transition name="modal" appear>
+            <div v-if="showDetailsModal" class="modal-shell" @click.stop>
+              <header class="modal-header">
+                <div>
+                  <div class="eyebrow">Media File</div>
+                  <h2 class="display text-xl mt-1 truncate">
+                    {{ metadataStore.currentMovie?.title }}
+                  </h2>
+                </div>
+                <button @click="closeModal" class="icon-btn" aria-label="Close">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" class="w-5 h-5">
+                    <path stroke-linecap="round" d="M6 6l12 12M18 6l-12 12" />
+                  </svg>
+                </button>
+              </header>
 
-          <div v-if="metadataStore.isLoading" class="p-6 text-center">
-            <div class="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-          </div>
-
-          <div v-else-if="metadataStore.currentMovie" class="p-6 space-y-6">
-            <!-- High-Signal Media Information Table -->
-            <div>
-              <h3 class="text-lg font-semibold mb-3">Media Information</h3>
-
-              <div class="overflow-x-auto">
-                <table class="min-w-full divide-y divide-gray-200">
-                  <tbody class="bg-white divide-y divide-gray-200">
-                    <!-- HDR Information -->
-                    <tr>
-                      <td class="px-4 py-3 text-sm font-medium text-gray-900 w-48">HDR Format</td>
-                      <td class="px-4 py-3 text-sm text-gray-700">
-                        <span v-if="metadataStore.currentMovie.dv_profile" class="font-medium text-purple-700">
-                          Dolby Vision {{ metadataStore.currentMovie.dv_profile }}
-                          <span v-if="metadataStore.currentMovie.dv_fel" class="ml-2 text-xs bg-purple-100 text-purple-800 px-2 py-0.5 rounded">FEL</span>
-                        </span>
-                        <span v-else-if="hasHDR" class="font-medium text-blue-700">
-                          {{ getHDRType() }}
-                        </span>
-                        <span v-else class="text-gray-500">SDR</span>
-                      </td>
-                    </tr>
-
-                    <!-- Atmos Information -->
-                    <tr>
-                      <td class="px-4 py-3 text-sm font-medium text-gray-900">Atmos Audio</td>
-                      <td class="px-4 py-3 text-sm text-gray-700">
-                        <span v-if="metadataStore.currentMovie.has_atmos">
-                          <span class="font-medium text-green-700">{{ getAtmosType() }}</span>
-                        </span>
-                        <span v-else class="text-gray-500">No</span>
-                      </td>
-                    </tr>
-
-                    <!-- Audio Tracks -->
-                    <tr>
-                      <td class="px-4 py-3 text-sm font-medium text-gray-900 align-top">Audio Tracks</td>
-                      <td class="px-4 py-3 text-sm text-gray-700">
-                        <div v-if="metadataStore.audioStreams.length > 0" class="space-y-2">
-                          <div v-for="(stream, index) in metadataStore.audioStreams" :key="index" class="flex items-start">
-                            <span class="inline-block w-6 text-gray-400 flex-shrink-0">{{ index + 1 }}.</span>
-                            <span class="flex-1">
-                              <span class="font-medium">{{ formatAudioCodec(stream) }}</span>
-                              <span class="text-gray-600 ml-2">{{ formatChannelLayout(stream) }}</span>
-                              <span v-if="stream.language" class="text-gray-500 ml-2">({{ stream.language }})</span>
-                            </span>
-                          </div>
-                        </div>
-                        <span v-else class="text-gray-500">No audio tracks detected</span>
-                      </td>
-                    </tr>
-
-                    <!-- Video Information -->
-                    <tr>
-                      <td class="px-4 py-3 text-sm font-medium text-gray-900">Video</td>
-                      <td class="px-4 py-3 text-sm text-gray-700">
-                        <span v-if="metadataStore.videoStreams.length > 0">
-                          {{ metadataStore.currentMovie.codec }} |
-                          {{ metadataStore.currentMovie.resolution }} |
-                          {{ metadataStore.videoStreams[0].width }}x{{ metadataStore.videoStreams[0].height }}
-                          <span v-if="metadataStore.videoStreams[0].frame_rate"> | {{ metadataStore.videoStreams[0].frame_rate }} fps</span>
-                        </span>
-                        <span v-else>
-                          {{ metadataStore.currentMovie.codec }} | {{ metadataStore.currentMovie.resolution }}
-                        </span>
-                      </td>
-                    </tr>
-
-                    <!-- Quality/Source -->
-                    <tr>
-                      <td class="px-4 py-3 text-sm font-medium text-gray-900">Quality</td>
-                      <td class="px-4 py-3 text-sm text-gray-700">
-                        {{ metadataStore.currentMovie.quality }}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
+              <div v-if="metadataStore.isLoading" class="modal-body text-center py-14">
+                <div class="spinner mx-auto"></div>
               </div>
-            </div>
 
-            <!-- File Path -->
-            <div>
-              <h3 class="text-lg font-semibold mb-2">File Path</h3>
-              <p class="text-sm text-gray-700 font-mono bg-gray-50 p-3 rounded break-all">
-                {{ metadataStore.currentMovie.file_path }}
-              </p>
-            </div>
+              <div v-else-if="metadataStore.currentMovie" class="modal-body space-y-7">
+                <section>
+                  <div class="eyebrow mb-3">Media signatures</div>
+                  <dl class="info-grid">
+                    <div>
+                      <dt>HDR format</dt>
+                      <dd>
+                        <template v-if="metadataStore.currentMovie.dv_profile">
+                          <span class="badge badge-p7">
+                            Dolby Vision {{ metadataStore.currentMovie.dv_profile }}
+                          </span>
+                          <span v-if="metadataStore.currentMovie.dv_fel" class="badge badge-fel ml-2">FEL</span>
+                        </template>
+                        <span v-else-if="hasHDR" class="badge badge-hdr">{{ getHDRType() }}</span>
+                        <span v-else class="muted">SDR</span>
+                      </dd>
+                    </div>
 
-            <div class="flex justify-end space-x-3">
-              <button @click="refreshMetadata" class="btn btn-secondary">
-                Refresh Metadata
-              </button>
-              <button @click="closeModal" class="btn btn-primary">
-                Close
-              </button>
+                    <div>
+                      <dt>Atmos audio</dt>
+                      <dd>
+                        <span v-if="metadataStore.currentMovie.has_atmos" class="badge badge-atmos">
+                          {{ getAtmosType() }}
+                        </span>
+                        <span v-else class="muted">No</span>
+                      </dd>
+                    </div>
+
+                    <div>
+                      <dt>Video</dt>
+                      <dd class="tabular-nums">
+                        <template v-if="metadataStore.videoStreams.length > 0">
+                          {{ metadataStore.currentMovie.codec }}
+                          <span class="pipe">·</span>
+                          {{ metadataStore.currentMovie.resolution }}
+                          <span class="pipe">·</span>
+                          {{ metadataStore.videoStreams[0].width }}×{{ metadataStore.videoStreams[0].height }}
+                          <template v-if="metadataStore.videoStreams[0].frame_rate">
+                            <span class="pipe">·</span>{{ metadataStore.videoStreams[0].frame_rate }} fps
+                          </template>
+                        </template>
+                        <template v-else>
+                          {{ metadataStore.currentMovie.codec }}
+                          <span class="pipe">·</span>
+                          {{ metadataStore.currentMovie.resolution }}
+                        </template>
+                      </dd>
+                    </div>
+
+                    <div>
+                      <dt>Quality</dt>
+                      <dd>{{ metadataStore.currentMovie.quality }}</dd>
+                    </div>
+                  </dl>
+                </section>
+
+                <section>
+                  <div class="eyebrow mb-3">Audio tracks</div>
+                  <ol v-if="metadataStore.audioStreams.length > 0" class="track-list">
+                    <li v-for="(stream, index) in metadataStore.audioStreams" :key="index">
+                      <span class="track-idx">{{ String(index + 1).padStart(2, '0') }}</span>
+                      <span class="track-codec">{{ formatAudioCodec(stream) }}</span>
+                      <span class="track-layout">{{ formatChannelLayout(stream) }}</span>
+                      <span v-if="stream.language" class="track-lang">{{ stream.language }}</span>
+                    </li>
+                  </ol>
+                  <p v-else class="muted">No audio tracks detected.</p>
+                </section>
+
+                <section>
+                  <div class="eyebrow mb-3">File path</div>
+                  <p class="file-path">{{ metadataStore.currentMovie.file_path }}</p>
+                </section>
+              </div>
+
+              <footer class="modal-footer">
+                <button @click="refreshMetadata" class="btn btn-secondary">Refresh metadata</button>
+                <button @click="closeModal" class="btn btn-primary">Close</button>
+              </footer>
             </div>
-          </div>
+          </transition>
         </div>
-      </div>
+      </transition>
     </teleport>
   </div>
 </template>
@@ -461,3 +438,208 @@ async function refreshMetadata() {
   }
 }
 </script>
+
+<style scoped>
+.count-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.95rem;
+  font-family: 'Geist', ui-sans-serif, sans-serif;
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  background: rgba(10, 10, 15, 0.55);
+  border: 1px solid rgba(212, 175, 55, 0.2);
+  border-radius: 999px;
+  color: var(--cinema-white);
+}
+.divider-slash { color: rgba(212, 175, 55, 0.5); margin: 0 0.1rem; }
+
+.search-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.search-icon {
+  position: absolute;
+  left: 1rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  color: var(--cinema-gold);
+  pointer-events: none;
+  opacity: 0.75;
+}
+.search-input {
+  flex: 1;
+  padding: 0.85rem 1rem 0.85rem 2.8rem;
+  font-size: 0.95rem;
+  font-family: 'Geist', ui-sans-serif, sans-serif;
+  background: rgba(10, 10, 15, 0.6);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(107, 107, 127, 0.2);
+  border-radius: 12px;
+  color: var(--cinema-white);
+  transition: border-color 220ms, box-shadow 220ms;
+}
+.search-input:focus {
+  outline: none;
+  border-color: rgba(212, 175, 55, 0.55);
+  box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.14),
+    0 0 24px rgba(212, 175, 55, 0.12);
+}
+.search-input::placeholder { color: rgba(107, 107, 127, 0.7); }
+
+/* Overlay + modal (mirror SettingsModal) */
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 80;
+  background:
+    radial-gradient(ellipse 60% 50% at 50% 30%, rgba(124, 58, 237, 0.22), transparent 70%),
+    rgba(4, 4, 9, 0.72);
+  backdrop-filter: blur(10px);
+}
+.modal-shell {
+  width: 100%;
+  max-width: 56rem;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  background:
+    linear-gradient(rgba(26, 26, 36, 0.94), rgba(26, 26, 36, 0.94)),
+    radial-gradient(ellipse 80% 40% at 50% 0%, rgba(212, 175, 55, 0.18), transparent 70%);
+  border: 1px solid rgba(212, 175, 55, 0.22);
+  border-radius: 18px;
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgba(212, 175, 55, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.3rem 1.75rem 1.1rem;
+  border-bottom: 1px solid rgba(107, 107, 127, 0.15);
+  background: rgba(10, 10, 15, 0.5);
+  gap: 1rem;
+}
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  color: var(--cinema-gray);
+  border-radius: 8px;
+  flex-shrink: 0;
+  transition: all 220ms var(--ease-standard);
+}
+.icon-btn:hover { color: var(--cinema-gold); background: rgba(212, 175, 55, 0.08); }
+.modal-body { padding: 1.75rem; overflow-y: auto; flex: 1; }
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  padding: 1.1rem 1.75rem;
+  border-top: 1px solid rgba(107, 107, 127, 0.15);
+  background: rgba(10, 10, 15, 0.5);
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.2rem 2rem;
+}
+.info-grid dt {
+  font-family: 'Geist', ui-sans-serif, sans-serif;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cinema-gold);
+  margin-bottom: 0.5rem;
+}
+.info-grid dd {
+  font-size: 0.92rem;
+  color: var(--cinema-white);
+  font-family: 'Geist', ui-sans-serif, sans-serif;
+}
+.pipe { color: rgba(212, 175, 55, 0.45); margin: 0 0.35rem; }
+
+.track-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.track-list li {
+  display: grid;
+  grid-template-columns: 2.2rem 1fr auto auto;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.55rem 0.85rem;
+  background: rgba(10, 10, 15, 0.4);
+  border: 1px solid rgba(107, 107, 127, 0.14);
+  border-radius: 10px;
+  font-size: 0.86rem;
+}
+.track-idx {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  color: var(--cinema-gold);
+  font-size: 0.72rem;
+}
+.track-codec {
+  font-weight: 600;
+  color: var(--cinema-white);
+}
+.track-layout { color: rgba(236, 236, 240, 0.75); font-size: 0.8rem; }
+.track-lang {
+  font-family: 'Geist', ui-sans-serif, sans-serif;
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cinema-gray);
+  background: rgba(45, 45, 61, 0.5);
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+}
+
+.file-path {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 0.78rem;
+  color: rgba(236, 236, 240, 0.85);
+  padding: 0.95rem 1.1rem;
+  background: rgba(10, 10, 15, 0.55);
+  border: 1px solid rgba(107, 107, 127, 0.18);
+  border-radius: 10px;
+  word-break: break-all;
+  line-height: 1.55;
+}
+
+.spinner {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  border: 2px solid rgba(212, 175, 55, 0.18);
+  border-top-color: var(--cinema-gold);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.overlay-enter-active, .overlay-leave-active { transition: opacity 220ms var(--ease-standard); }
+.overlay-enter-from, .overlay-leave-to { opacity: 0; }
+.modal-enter-active { transition: all 340ms var(--ease-spring); }
+.modal-leave-active { transition: all 200ms var(--ease-standard); }
+.modal-enter-from, .modal-leave-to { opacity: 0; transform: translateY(14px) scale(0.97); }
+</style>

@@ -31,7 +31,7 @@
       </div>
       <div class="stat-card" style="animation: fadeInUp 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) 0.25s backwards;">
         <div class="stat-label">Blocked</div>
-        <div class="stat-value" style="font-size: 2rem; background: linear-gradient(135deg, #f87171, #dc2626); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">
+        <div class="stat-value" style="font-size: 2rem; background: linear-gradient(135deg, #d45473, #8c2f4e); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">
           {{ summary.blocked_count }}
         </div>
         <div class="stat-subtitle">Excluded groups</div>
@@ -47,7 +47,7 @@
             type="checkbox"
             v-model="showPreferredOnly"
             class="form-checkbox rounded"
-            style="accent-color: #818cf8;"
+            style="accent-color: #4d7cff;"
           />
           <span class="text-sm" style="color: #9ca3af;">Show preferred only</span>
         </label>
@@ -78,12 +78,12 @@
               </td>
               <td class="table-cell text-center">
                 <span v-if="group.is_preferred" class="badge badge-4k" style="font-size: 0.65rem;">PREFERRED</span>
-                <span v-else-if="group.is_blocked" class="badge" style="background: rgba(239, 68, 68, 0.2); border-color: rgba(239, 68, 68, 0.4); color: #f87171; font-size: 0.65rem;">BLOCKED</span>
+                <span v-else-if="group.is_blocked" class="badge" style="background: rgba(212, 84, 115, 0.2); border-color: rgba(212, 84, 115, 0.4); color: #d45473; font-size: 0.65rem;">BLOCKED</span>
                 <span v-else class="text-xs" style="color: #9ca3af;">-</span>
               </td>
-              <td class="table-cell text-right font-medium" style="color: #818cf8;">{{ group.total_releases_seen }}</td>
+              <td class="table-cell text-right font-medium" style="color: #4d7cff;">{{ group.total_releases_seen }}</td>
               <td class="table-cell text-right">
-                <span v-if="group.avg_quality_score" class="font-medium" style="color: #a78bfa;">{{ Math.round(group.avg_quality_score) }}</span>
+                <span v-if="group.avg_quality_score" class="font-medium" style="color: #9bb4ff;">{{ Math.round(group.avg_quality_score) }}</span>
                 <span v-else style="color: #9ca3af;">-</span>
               </td>
               <td class="table-cell text-right">
@@ -126,7 +126,7 @@
 
     <!-- Loading -->
     <div v-if="store.loading && groups.length === 0" class="text-center py-20">
-      <div class="inline-block w-10 h-10 border-2 border-[#818cf8] border-t-transparent rounded-full animate-spin"></div>
+      <div class="inline-block w-10 h-10 border-2 border-[#4d7cff] border-t-transparent rounded-full animate-spin"></div>
     </div>
   </div>
 </template>
@@ -177,10 +177,10 @@ onMounted(() => {
 
 .section-icon {
   width: 48px; height: 48px; border-radius: 12px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(99, 102, 241, 0.2));
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: linear-gradient(135deg, rgba(77, 124, 255, 0.2), rgba(77, 124, 255, 0.2));
+  border: 1px solid rgba(77, 124, 255, 0.3);
   display: flex; align-items: center; justify-content: center;
-  color: #818cf8; flex-shrink: 0;
+  color: #4d7cff; flex-shrink: 0;
 }
 
 .table-header {
@@ -192,18 +192,18 @@ onMounted(() => {
   font-weight: 600;
 }
 .table-row { border-bottom: 1px solid rgba(107, 107, 127, 0.1); transition: background 0.2s; }
-.table-row:hover { background: rgba(99, 102, 241, 0.05); }
+.table-row:hover { background: rgba(77, 124, 255, 0.05); }
 .table-cell { padding: 0.75rem 1rem; font-size: 0.875rem; }
 .row-preferred { background: rgba(16, 185, 129, 0.05); }
-.row-blocked { background: rgba(239, 68, 68, 0.05); opacity: 0.7; }
+.row-blocked { background: rgba(212, 84, 115, 0.05); opacity: 0.7; }
 
 .action-btn {
   padding: 0.375rem; border-radius: 6px;
   color: #9ca3af; transition: all 0.2s;
   background: transparent;
 }
-.action-btn:hover { color: #818cf8; background: rgba(99, 102, 241, 0.1); }
-.action-btn.active { color: #818cf8; }
-.action-btn.block-btn:hover { color: #f87171; background: rgba(239, 68, 68, 0.1); }
-.action-btn.block-btn.active { color: #f87171; }
+.action-btn:hover { color: #4d7cff; background: rgba(77, 124, 255, 0.1); }
+.action-btn.active { color: #4d7cff; }
+.action-btn.block-btn:hover { color: #d45473; background: rgba(212, 84, 115, 0.1); }
+.action-btn.block-btn.active { color: #d45473; }
 </style>

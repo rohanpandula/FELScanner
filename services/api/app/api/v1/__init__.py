@@ -17,6 +17,7 @@ from app.api.v1 import (
     analytics,
     release_groups,
     activity,
+    viz,
 )
 
 # Create main API v1 router
@@ -35,3 +36,4 @@ api_router.include_router(ipt.router, prefix="/ipt", tags=["ipt"])
 api_router.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
 api_router.include_router(release_groups.router, prefix="/release-groups", tags=["release-groups"])
 api_router.include_router(activity.router, prefix="/activity", tags=["activity"])
+api_router.include_router(viz.router, prefix="/viz", tags=["viz"])

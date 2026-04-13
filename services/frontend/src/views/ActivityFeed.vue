@@ -18,7 +18,7 @@
     <!-- Summary Chips -->
     <div class="flex flex-wrap items-center gap-3" v-if="activitySummary" style="animation: fadeInUp 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) 0.15s backwards;">
       <div class="summary-chip">
-        <span class="font-bold" style="color: #818cf8;">{{ activitySummary.total_events }}</span>
+        <span class="font-bold" style="color: #4d7cff;">{{ activitySummary.total_events }}</span>
         <span>events in last {{ activitySummary.hours }}h</span>
       </div>
       <div v-for="(count, type) in activitySummary.by_type" :key="type" class="summary-chip">
@@ -66,7 +66,7 @@
               <p class="text-sm font-medium" style="color: #f5f5f7;">{{ event.title }}</p>
               <p v-if="event.description" class="text-xs mt-1" style="color: #9ca3af;">{{ event.description }}</p>
               <div v-if="event.quality_before || event.quality_after" class="flex items-center space-x-2 mt-2">
-                <span v-if="event.quality_before" class="text-xs px-2 py-0.5 rounded" style="background: rgba(239, 68, 68, 0.15); color: #f87171;">{{ event.quality_before }}</span>
+                <span v-if="event.quality_before" class="text-xs px-2 py-0.5 rounded" style="background: rgba(212, 84, 115, 0.15); color: #d45473;">{{ event.quality_before }}</span>
                 <svg v-if="event.quality_before && event.quality_after" class="w-3 h-3" style="color: #9ca3af;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6" />
                 </svg>
@@ -92,7 +92,7 @@
 
     <!-- Loading -->
     <div v-if="store.loading && events.length === 0" class="text-center py-20">
-      <div class="inline-block w-10 h-10 border-2 border-[#818cf8] border-t-transparent rounded-full animate-spin"></div>
+      <div class="inline-block w-10 h-10 border-2 border-[#4d7cff] border-t-transparent rounded-full animate-spin"></div>
     </div>
   </div>
 </template>
@@ -162,14 +162,14 @@ function formatEventType(type: string): string {
 function eventColor(type: string): string {
   const map: Record<string, string> = {
     movie_added: '#10b981',
-    movie_upgraded: '#818cf8',
-    movie_removed: '#f87171',
+    movie_upgraded: '#4d7cff',
+    movie_removed: '#d45473',
     download_approved: '#10b981',
     download_declined: '#f59e0b',
     scan_completed: '#3b82f6',
-    collection_changed: '#a78bfa',
-    upgrade_available: '#818cf8',
-    ipt_scan: '#7c3aed',
+    collection_changed: '#9bb4ff',
+    upgrade_available: '#4d7cff',
+    ipt_scan: '#4d7cff',
   }
   return map[type] || '#9ca3af'
 }
@@ -179,7 +179,7 @@ function severityColor(severity: string): string {
     success: '#10b981',
     info: '#3b82f6',
     warning: '#f59e0b',
-    error: '#f87171',
+    error: '#d45473',
   }
   return map[severity] || '#9ca3af'
 }
@@ -198,10 +198,10 @@ onMounted(() => {
 
 .section-icon {
   width: 48px; height: 48px; border-radius: 12px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(99, 102, 241, 0.2));
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: linear-gradient(135deg, rgba(77, 124, 255, 0.2), rgba(77, 124, 255, 0.2));
+  border: 1px solid rgba(77, 124, 255, 0.3);
   display: flex; align-items: center; justify-content: center;
-  color: #818cf8; flex-shrink: 0;
+  color: #4d7cff; flex-shrink: 0;
 }
 
 .summary-chip {

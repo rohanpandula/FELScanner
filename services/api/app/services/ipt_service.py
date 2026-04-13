@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.movie import Movie
+from app.services.ipt_scraper import get_scraper
 from app.utils.torrent_parser import TorrentTitleParser
 
 logger = get_logger(__name__)
@@ -39,33 +40,27 @@ class IPTService:
 
     async def trigger_scan(self) -> dict[str, Any]:
         """
-        Trigger an IPT scan
-
-        Returns:
-            dict: Scan results with torrents found
-
-        Raises:
-            httpx.HTTPError: If scraper service is unreachable
+        Trigger an IPT scan using the in-process scraper.
         """
         logger.info("ipt.scan_triggered")
+        scraper = get_scraper()
+        try:
+            results = await scraper.scan()
+        except Exception as e:  # noqa: BLE001
+            logger.error("ipt.scan_failed", error=str(e))
+            raise
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                response = await client.post(f"{self.scraper_url}/api/scan")
-                response.raise_for_status()
-                data = response.json()
-
-                logger.info(
-                    "ipt.scan_completed",
-                    total=data.get("results", {}).get("total", 0),
-                    new=data.get("results", {}).get("new", 0),
-                )
-
-                return data
-
-            except httpx.HTTPError as e:
-                logger.error("ipt.scan_failed", error=str(e))
-                raise
+        new_count = sum(1 for r in results if r.get("isNew"))
+        logger.info("ipt.scan_completed", total=len(results), new=new_count)
+        return {
+            "success": True,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "results": {
+                "total": len(results),
+                "new": new_count,
+                "torrents": results,
+            },
+        }
 
     async def _build_library_index(self) -> dict[str, dict[str, Any]]:
         """
@@ -217,48 +212,40 @@ class IPTService:
 
     async def get_latest_results(self) -> dict[str, Any]:
         """
-        Get latest scan results from scraper with enriched metadata and library matching
-
-        Returns:
-            dict: Latest scan results with torrents enriched with parsed metadata
-                  and library match info
+        Get latest scan results from the in-process scraper, enriched with
+        parsed metadata and matched against the Plex library / Radarr catalogue.
         """
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            try:
-                response = await client.get(f"{self.scraper_url}/api/results")
-                response.raise_for_status()
-                data = response.json()
+        try:
+            raw = await get_scraper().get_latest_results()
+        except Exception as e:  # noqa: BLE001
+            logger.error("ipt.get_results_failed", error=str(e))
+            return {
+                "success": False,
+                "timestamp": None,
+                "results": {"total": 0, "new": 0, "torrents": []},
+            }
 
-                # Build library + radarr indexes for matching
-                library_index = await self._build_library_index()
-                radarr_index = await self._build_radarr_index()
+        torrents = raw.get("torrents", []) or []
+        library_index = await self._build_library_index()
+        radarr_index  = await self._build_radarr_index()
 
-                # Enrich torrents with parsed metadata + library match
-                if data.get("results", {}).get("torrents"):
-                    enriched = []
-                    for t in data["results"]["torrents"]:
-                        enriched_t = self._enrich_torrent(t)
-                        # Add library match info
-                        lib_match = self._match_library(
-                            enriched_t.get("metadata", {}), library_index, radarr_index
-                        )
-                        enriched_t["library"] = lib_match
-                        enriched.append(enriched_t)
-                    data["results"]["torrents"] = enriched
+        enriched = []
+        for t in torrents:
+            row = self._enrich_torrent(t)
+            row["library"] = self._match_library(
+                row.get("metadata", {}), library_index, radarr_index
+            )
+            enriched.append(row)
 
-                return data
-
-            except httpx.HTTPError as e:
-                logger.error("ipt.get_results_failed", error=str(e))
-                return {
-                    "success": False,
-                    "timestamp": None,
-                    "results": {
-                        "total": 0,
-                        "new": 0,
-                        "torrents": [],
-                    },
-                }
+        return {
+            "success": True,
+            "timestamp": raw.get("timestamp"),
+            "results": {
+                "total": len(enriched),
+                "new": sum(1 for t in enriched if t.get("isNew")),
+                "torrents": enriched,
+            },
+        }
 
     def _enrich_torrent(self, torrent: dict[str, Any]) -> dict[str, Any]:
         """
@@ -282,78 +269,44 @@ class IPTService:
 
     async def get_known_torrents(self) -> list[dict[str, Any]]:
         """
-        Get known torrents from scraper cache with enriched metadata
-
-        Returns:
-            list: Known torrents with parsed metadata
+        Get known torrents from in-process cache, enriched + sorted by quality.
         """
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            try:
-                response = await client.get(f"{self.scraper_url}/api/known")
-                response.raise_for_status()
-                data = response.json()
-                torrents = data.get("torrents", [])
+        try:
+            torrents = await get_scraper().get_known_torrents()
+        except Exception as e:  # noqa: BLE001
+            logger.error("ipt.get_known_failed", error=str(e))
+            return []
 
-                # Enrich each torrent with parsed metadata
-                enriched_torrents = [self._enrich_torrent(t) for t in torrents]
-
-                # Sort by quality score (highest first)
-                enriched_torrents.sort(
-                    key=lambda t: t.get("metadata", {}).get("quality_score", 0),
-                    reverse=True
-                )
-
-                return enriched_torrents
-
-            except httpx.HTTPError as e:
-                logger.error("ipt.get_known_failed", error=str(e))
-                return []
-            except Exception as e:
-                logger.error("ipt.enrichment_failed", error=str(e), exc_info=True)
-                raise
+        enriched = [self._enrich_torrent(t) for t in torrents]
+        enriched.sort(
+            key=lambda t: t.get("metadata", {}).get("quality_score", 0),
+            reverse=True,
+        )
+        return enriched
 
     async def clear_cache(self) -> dict[str, str]:
-        """
-        Clear known torrents cache
-
-        Returns:
-            dict: Success message
-        """
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            try:
-                response = await client.delete(f"{self.scraper_url}/api/known")
-                response.raise_for_status()
-                data = response.json()
-
-                logger.info("ipt.cache_cleared")
-                return {"message": data.get("message", "Cache cleared")}
-
-            except httpx.HTTPError as e:
-                logger.error("ipt.clear_cache_failed", error=str(e))
-                raise
+        """Clear known torrents cache."""
+        try:
+            await get_scraper().clear_known_torrents()
+        except Exception as e:  # noqa: BLE001
+            logger.error("ipt.clear_cache_failed", error=str(e))
+            raise
+        logger.info("ipt.cache_cleared")
+        return {"message": "Cache cleared"}
 
     async def check_health(self) -> dict[str, str]:
         """
-        Check IPT scraper service health
-
-        Returns:
-            dict: Health status
+        Report scraper health. In-process — always healthy when FlareSolverr
+        is configured; reports degraded if not.
         """
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            try:
-                response = await client.get(f"{self.scraper_url}/health")
-                response.raise_for_status()
-                data = response.json()
-
-                return {
-                    "status": "healthy",
-                    "message": f"IPT scraper v{data.get('version', 'unknown')} is running",
-                    "uptime": data.get("uptime", 0),
-                }
-
-            except httpx.HTTPError as e:
-                logger.error("ipt.health_check_failed", error=str(e))
-                return {
-                    "status": "unhealthy",
-                    "message": f"IPT scraper unreachable: {str(e)}",
-                }
+        scraper = get_scraper()
+        if not scraper.flaresolverr_url:
+            return {
+                "status": "degraded",
+                "message": "IPT scraper running in-process — FLARESOLVERR_URL not set",
+            }
+        return {
+            "status": "healthy",
+            "message": "IPT scraper (in-process) ready",
+            "uptime": 0,
+        }

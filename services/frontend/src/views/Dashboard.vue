@@ -10,7 +10,7 @@
 
       <div class="stat-card group" style="animation: fadeInUp 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) 0.2s backwards;">
         <div class="stat-label">Dolby Vision</div>
-        <div class="stat-value" style="background: linear-gradient(135deg, #818cf8, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">
+        <div class="stat-value" style="background: linear-gradient(135deg, #4d7cff, #9bb4ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">
           {{ moviesStore.statistics.dv_total }}
         </div>
         <div class="stat-subtitle">
@@ -54,7 +54,7 @@
               </span>
             </div>
             <div v-if="appStore.scanStatus.current_movie" class="text-sm mt-2" style="color: #9ca3af;">
-              <span class="font-semibold" style="color: #818cf8;">Currently scanning:</span> {{ appStore.scanStatus.current_movie }}
+              <span class="font-semibold" style="color: #4d7cff;">Currently scanning:</span> {{ appStore.scanStatus.current_movie }}
             </div>
           </div>
 
@@ -87,7 +87,7 @@
         <div v-if="appStore.isScanning" class="w-full space-y-2">
           <div class="flex justify-between items-center">
             <span class="text-sm font-semibold" style="color: #9ca3af;">Scanning Progress</span>
-            <span class="text-sm font-bold" style="color: #818cf8;">
+            <span class="text-sm font-bold" style="color: #4d7cff;">
               {{ appStore.scanStatus.scanned_count }} / {{ appStore.scanStatus.total_movies }}
             </span>
           </div>
@@ -105,14 +105,14 @@
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
           <span class="font-semibold">Elapsed:</span>
-          <span style="color: #818cf8;">{{ formatElapsedTime(appStore.scanStatus.elapsed_time) }}</span>
+          <span style="color: #4d7cff;">{{ formatElapsedTime(appStore.scanStatus.elapsed_time) }}</span>
         </div>
       </div>
 
       <!-- Scan Log Box (only visible during manual scan) -->
       <div v-if="showLogBox" class="mt-6">
         <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-semibold" style="color: #818cf8;">Scan Log</h3>
+          <h3 class="text-sm font-semibold" style="color: #4d7cff;">Scan Log</h3>
           <button
             @click="closeLogBox"
             class="text-gray-400 hover:text-white transition-colors"
@@ -175,7 +175,7 @@
             </svg>
           </div>
           <div>
-            <h3 class="text-xl font-bold" style="color: #f87171;">Pending Approvals</h3>
+            <h3 class="text-xl font-bold" style="color: #d45473;">Pending Approvals</h3>
             <p class="text-sm mt-1" style="color: #fca5a5; font-weight: 500;">
               {{ downloadsStore.pendingCount }} download{{ downloadsStore.pendingCount !== 1 ? 's' : '' }} awaiting your review
             </p>
@@ -453,12 +453,12 @@ async function triggerScanWithStream() {
   width: 48px;
   height: 48px;
   border-radius: 12px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(99, 102, 241, 0.2));
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: linear-gradient(135deg, rgba(77, 124, 255, 0.2), rgba(77, 124, 255, 0.2));
+  border: 1px solid rgba(77, 124, 255, 0.3);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #818cf8;
+  color: #4d7cff;
   flex-shrink: 0;
 }
 
@@ -470,9 +470,9 @@ async function triggerScanWithStream() {
 }
 
 .status-scanning {
-  background: rgba(124, 58, 237, 0.2);
-  border: 1px solid rgba(124, 58, 237, 0.4);
-  color: #a78bfa;
+  background: rgba(77, 124, 255, 0.2);
+  border: 1px solid rgba(77, 124, 255, 0.4);
+  color: #9bb4ff;
   animation: pulse-status 2s ease-in-out infinite;
 }
 
@@ -485,7 +485,7 @@ async function triggerScanWithStream() {
 .status-error {
   background: rgba(239, 68, 68, 0.2);
   border: 1px solid rgba(239, 68, 68, 0.4);
-  color: #f87171;
+  color: #d45473;
 }
 
 @keyframes pulse-status {
@@ -511,12 +511,12 @@ async function triggerScanWithStream() {
 
 .progress-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, #818cf8, #6366f1, #818cf8);
+  background: linear-gradient(90deg, #4d7cff, #3a67e6, #4d7cff);
   background-size: 200% 100%;
   border-radius: 999px;
   transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
   animation: shimmer-progress 2s ease-in-out infinite;
-  box-shadow: 0 0 20px rgba(99, 102, 241, 0.5);
+  box-shadow: 0 0 20px rgba(77, 124, 255, 0.5);
 }
 
 @keyframes shimmer-progress {
@@ -537,7 +537,7 @@ async function triggerScanWithStream() {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #f87171;
+  color: #d45473;
   animation: pulse-download 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   flex-shrink: 0;
 }

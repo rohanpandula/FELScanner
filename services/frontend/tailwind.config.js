@@ -8,34 +8,55 @@ export default {
   theme: {
     extend: {
       colors: {
-        cinema: {
-          black: '#0a0a0f',
-          charcoal: '#1a1a24',
-          slate: '#2d2d3d',
-          gray: '#6b6b7f',
-          white: '#f5f5f7',
-          gold: '#d4af37',
-          'gold-dark': '#b8941f',
-          violet: '#7c3aed',
-          'violet-bright': '#a78bfa',
-          burgundy: '#8b1538',
-          wine: '#6b1129',
+        // Single-accent taste-skill palette — electric blue, no purple, no gold.
+        // Legacy "cinema" namespace retained to avoid breaking any v-bind class
+        // references; all tokens remapped to the new neutrals/accent.
+        accent: {
+          DEFAULT: '#4d7cff',
+          hover:   '#6b92ff',
+          muted:   'rgba(77, 124, 255, 0.12)',
         },
-        success: '#10b981',
-        warning: '#f59e0b',
-        error: '#8b1538',
-        info: '#3b82f6',
+        zinc: {
+          50:  '#f4f4f5',
+          100: '#e4e4e7',
+          200: '#d4d4d8',
+          300: '#a1a1aa',
+          400: '#71717a',
+          500: '#52525b',
+          600: '#3f3f46',
+          700: '#27272a',
+          800: '#1c1c1f',
+          900: '#141416',
+          950: '#0c0c0e',
+        },
+        cinema: {
+          black:           '#0c0c0e',
+          charcoal:        '#141416',
+          slate:           '#1c1c1f',
+          gray:            '#71717a',
+          white:           '#f4f4f5',
+          gold:            '#4d7cff',   // legacy name -> electric blue
+          'gold-dark':     '#3a67e6',
+          violet:          '#4d7cff',
+          'violet-bright': '#9bb4ff',
+          burgundy:        '#d45473',
+          wine:            '#b53d63',
+        },
+        success: '#3fa877',
+        warning: '#d49a42',
+        error:   '#d45473',
+        info:    '#4d7cff',
       },
       fontFamily: {
-        display: ['Cinzel', 'serif'],
-        sans: ['Outfit', 'system-ui', 'sans-serif'],
-        mono: ['JetBrains Mono', 'Consolas', 'Monaco', 'monospace'],
+        display: ['Geist', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        sans:    ['Geist', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono:    ['Geist Mono', 'JetBrains Mono', 'ui-monospace', 'monospace'],
       },
       borderRadius: {
-        'card': '16px',
+        'card': '12px',
       },
       backdropBlur: {
-        'card': '20px',
+        'card': '24px',
       },
     },
   },

@@ -26,7 +26,7 @@
     <!-- Scan Log Box (only visible during manual scan) -->
     <div v-if="showLogBox" class="card">
       <div class="flex items-center justify-between mb-3">
-        <h3 class="text-sm font-semibold" style="color: #818cf8;">Scan Log</h3>
+        <h3 class="text-sm font-semibold" style="color: #4d7cff;">Scan Log</h3>
         <button
           @click="closeLogBox"
           class="text-gray-400 hover:text-white transition-colors"
@@ -108,7 +108,7 @@
 
         <div>
           <label class="label">
-            Min Year: <span class="font-mono font-bold" style="color: #818cf8;">{{ minYear }}</span>
+            Min Year: <span class="font-mono font-bold" style="color: #4d7cff;">{{ minYear }}</span>
           </label>
           <div class="flex items-center gap-3">
             <input
@@ -116,13 +116,13 @@
               type="range"
               :min="1950"
               :max="currentYear"
-              class="w-full accent-indigo-500"
+              class="w-full accent-gold"
               style="height: 6px;"
             />
             <button
               @click="minYear = 1950"
               class="text-xs px-2 py-1 rounded transition-colors shrink-0"
-              style="background: rgba(99, 102, 241, 0.1); color: #818cf8;"
+              style="background: rgba(77, 124, 255, 0.1); color: #4d7cff;"
               title="Reset to show all years"
             >
               All
@@ -134,7 +134,7 @@
 
     <!-- Loading State -->
     <div v-if="isLoading" class="card text-center py-12">
-      <div class="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
+      <div class="spinner mx-auto"></div>
       <p class="mt-4 text-gray-600">Loading torrents...</p>
     </div>
 
@@ -148,10 +148,10 @@
       <table class="min-w-full divide-y divide-gray-700">
         <thead style="background: rgba(31, 41, 55, 0.6);">
           <tr>
-            <th class="px-5 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #818cf8;">Title</th>
+            <th class="px-5 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #4d7cff;">Title</th>
             <th
               class="px-4 py-4 text-left text-xs font-semibold uppercase tracking-wider cursor-pointer select-none"
-              style="color: #818cf8;"
+              style="color: #4d7cff;"
               @click="toggleSort('year')"
             >
               Year
@@ -159,16 +159,16 @@
             </th>
             <th
               class="px-4 py-4 text-left text-xs font-semibold uppercase tracking-wider cursor-pointer select-none"
-              style="color: #818cf8;"
+              style="color: #4d7cff;"
               @click="toggleSort('uploaded')"
             >
               Uploaded
               <span v-if="sortBy === 'uploaded'" class="ml-1">{{ sortDir === 'asc' ? '▲' : '▼' }}</span>
             </th>
-            <th class="px-4 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #818cf8;">Size</th>
-            <th class="px-4 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #818cf8;">Group</th>
-            <th class="px-4 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #818cf8;">Status</th>
-            <th class="px-4 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #818cf8;">Actions</th>
+            <th class="px-4 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #4d7cff;">Size</th>
+            <th class="px-4 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #4d7cff;">Group</th>
+            <th class="px-4 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #4d7cff;">Status</th>
+            <th class="px-4 py-4 text-left text-xs font-semibold uppercase tracking-wider" style="color: #4d7cff;">Actions</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-700" style="background: rgba(20, 20, 30, 0.4);">
@@ -234,9 +234,9 @@
                   v-if="group.versions.length > 0"
                   @click="toggleGroup(group.key)"
                   class="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded font-semibold cursor-pointer transition-all"
-                  style="background: rgba(99, 102, 241, 0.15); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.25);"
-                  @mouseover="$event.currentTarget.style.background = 'rgba(99, 102, 241, 0.25)'"
-                  @mouseout="$event.currentTarget.style.background = 'rgba(99, 102, 241, 0.15)'"
+                  style="background: rgba(77, 124, 255, 0.15); color: #7ea1ff; border: 1px solid rgba(77, 124, 255, 0.25);"
+                  @mouseover="$event.currentTarget.style.background = 'rgba(77, 124, 255, 0.25)'"
+                  @mouseout="$event.currentTarget.style.background = 'rgba(77, 124, 255, 0.15)'"
                 >
                   <svg
                     class="w-3 h-3 transition-transform"
@@ -283,7 +283,7 @@
                 v-for="(version, vIdx) in group.versions"
                 :key="`${gIdx}-v-${vIdx}`"
                 class="transition-colors"
-                style="background: rgba(99, 102, 241, 0.03);"
+                style="background: rgba(77, 124, 255, 0.03);"
               >
                 <td class="px-5 py-3" style="padding-left: 2.5rem;">
                   <div class="flex items-center gap-2">
@@ -312,10 +312,10 @@
                   <div class="text-sm" style="color: #6b7280;">{{ formatAdded(version.upload_date) }}</div>
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap">
-                  <div class="text-sm" :style="version.size !== group.primary.size ? 'color: #a5b4fc;' : 'color: #6b7280;'">{{ version.size }}</div>
+                  <div class="text-sm" :style="version.size !== group.primary.size ? 'color: #7ea1ff;' : 'color: #6b7280;'">{{ version.size }}</div>
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap">
-                  <div class="text-xs font-mono" :style="version.metadata?.release_group !== group.primary.metadata?.release_group ? 'color: #a5b4fc;' : 'color: #6b7280;'">{{ version.metadata?.release_group || '-' }}</div>
+                  <div class="text-xs font-mono" :style="version.metadata?.release_group !== group.primary.metadata?.release_group ? 'color: #7ea1ff;' : 'color: #6b7280;'">{{ version.metadata?.release_group || '-' }}</div>
                 </td>
                 <td class="px-4 py-3 whitespace-nowrap">
                   <div v-if="version.library?.in_library">

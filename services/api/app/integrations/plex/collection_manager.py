@@ -184,7 +184,7 @@ class CollectionManager:
         return results
 
     async def verify_collections(
-        self, movies: list[dict[str, Any]]
+        self, movies: list[dict[str, Any]], on_progress=None
     ) -> dict[str, int]:
         """
         Verify all movies are in correct collections
@@ -194,6 +194,9 @@ class CollectionManager:
 
         Args:
             movies: List of all movie metadata
+            on_progress: Optional callback(message, done, total, current) to
+                stream status while the (potentially long) collection-update
+                phase runs.
 
         Returns:
             dict: Statistics
@@ -214,6 +217,10 @@ class CollectionManager:
             "atmos_added": 0,
             "atmos_removed": 0,
         }
+
+        total = len(movies)
+        processed = 0
+        last_emit = 0
 
         for movie in movies:
             rating_key = movie["rating_key"]
@@ -251,6 +258,19 @@ class CollectionManager:
             elif not should_be_in_atmos and in_atmos:
                 if await self.remove_from_atmos_collection(rating_key, title):
                     stats["atmos_removed"] += 1
+
+            processed += 1
+            # Emit a log line every 50 movies so the UI never goes dark during
+            # the collection-update phase.
+            if on_progress and (processed - last_emit >= 50 or processed == total):
+                on_progress(
+                    f"Updating collections {processed}/{total} "
+                    f"(+DV {stats['dv_added']}, +P7 {stats['p7_added']}, +Atmos {stats['atmos_added']})",
+                    processed,
+                    total,
+                    title,
+                )
+                last_emit = processed
 
         logger.info("collection.verify_complete", stats=stats)
         return stats

@@ -78,7 +78,13 @@ class PlexClient:
             list[PlexMovie]: All movies in the library
         """
         if not self._library:
-            await self.connect()
+            connected = await self.connect()
+            if not connected or not self._library:
+                raise RuntimeError(
+                    f"Plex unreachable — could not connect to {self.settings.PLEX_URL} "
+                    f"or resolve library '{self.settings.LIBRARY_NAME}'. "
+                    "Check PLEX_URL, PLEX_TOKEN and LIBRARY_NAME."
+                )
 
         loop = asyncio.get_event_loop()
         movies = []
@@ -199,22 +205,43 @@ class PlexClient:
         logger.info("plex.collection_created", name=collection_name)
         return collection
 
+    # Per-process cache of which collections are smart (auto-populated by Plex
+    # via filter rules). Smart collections reject addItems with a 400; there's
+    # no point retrying per-movie.
+    _smart_collection_cache: dict[str, bool] = {}
+
     async def add_to_collection(self, collection_name: str, rating_key: str) -> bool:
         """
-        Add a movie to a collection
+        Add a movie to a collection.
 
-        Args:
-            collection_name: Collection name
-            rating_key: Movie rating key
-
-        Returns:
-            bool: True if successful
+        Smart collections (auto-populated by Plex) can't accept manual adds;
+        we detect them once per scan and skip cleanly instead of hammering
+        the API with one failure per movie.
         """
+        if self._smart_collection_cache.get(collection_name) is True:
+            # Already proven smart this process — skip silently (debug, not error).
+            logger.debug(
+                "plex.skip_smart_collection",
+                collection=collection_name,
+                rating_key=rating_key,
+            )
+            return False
+
         try:
             collection = await self.get_collection(collection_name)
 
             if not collection:
                 collection = await self.create_collection(collection_name)
+
+            # Detect smart collections once and cache the verdict.
+            is_smart = bool(getattr(collection, "smart", False))
+            if is_smart:
+                type(self)._smart_collection_cache[collection_name] = True
+                logger.info(
+                    "plex.collection_is_smart_skipping",
+                    collection=collection_name,
+                )
+                return False
 
             movie = await self.get_movie_by_rating_key(rating_key)
             if not movie:
@@ -232,11 +259,21 @@ class PlexClient:
             return True
 
         except Exception as e:
+            msg = str(e)
+            # Runtime fallback detection: if we didn't catch it via `.smart`,
+            # the error message itself tells us.
+            if "smart collection" in msg.lower():
+                type(self)._smart_collection_cache[collection_name] = True
+                logger.info(
+                    "plex.collection_is_smart_skipping",
+                    collection=collection_name,
+                )
+                return False
             logger.error(
                 "plex.add_to_collection_failed",
                 collection=collection_name,
                 rating_key=rating_key,
-                error=str(e),
+                error=msg,
             )
             return False
 

@@ -43,7 +43,7 @@
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4" v-if="report">
       <div class="stat-card" style="animation: fadeInUp 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) 0.15s backwards;">
         <div class="stat-label">Dolby Vision</div>
-        <div class="stat-value" style="font-size: 1.75rem; background: linear-gradient(135deg, #7c3aed, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">
+        <div class="stat-value" style="font-size: 1.75rem; background: linear-gradient(135deg, #4d7cff, #9bb4ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">
           {{ report.quality_summary.dv_percentage }}%
         </div>
         <div class="stat-subtitle">{{ report.quality_summary.dv_count }} movies</div>
@@ -97,13 +97,31 @@
           <div class="tier-bar-track">
             <div
               class="tier-bar-fill"
-              :style="{ width: tier.percentage + '%', background: tier.color }"
+              :style="{ width: tier.barWidth + '%', background: tier.color }"
             ></div>
           </div>
           <div class="text-xs mt-1" style="color: #9ca3af;">{{ tier.description }}</div>
         </div>
       </div>
     </div>
+
+    <!-- Storytelling viz row: quality tiers + quality radar -->
+    <section v-if="report" class="grid grid-cols-1 lg:grid-cols-5 gap-5">
+      <div class="card p-4 lg:col-span-3">
+        <AntVChart
+          :spec="tierPieSpec"
+          caption="Quality tiers"
+          note="A full pie is a 100%-covered library. The slices tell you how close you are to a reference-grade collection."
+        />
+      </div>
+      <div class="card p-4 lg:col-span-2">
+        <AntVChart
+          :spec="qualityRadarSpec"
+          caption="Quality dimensions"
+          note="Each axis is the percentage of the library that meets that quality signal."
+        />
+      </div>
+    </section>
 
     <!-- Distribution Charts Row -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6" v-if="report">
@@ -135,7 +153,7 @@
 
     <!-- Loading state -->
     <div v-if="store.loading && !report" class="text-center py-20">
-      <div class="inline-block w-10 h-10 border-2 border-[#818cf8] border-t-transparent rounded-full animate-spin"></div>
+      <div class="inline-block w-10 h-10 border-2 border-[#4d7cff] border-t-transparent rounded-full animate-spin"></div>
       <p class="mt-4 text-sm" style="color: #9ca3af;">Analyzing library quality...</p>
     </div>
   </div>
@@ -144,31 +162,95 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 import { useAnalyticsStore } from '@/stores/analytics'
+import AntVChart from '@/components/AntVChart.vue'
+import type { ChartSpec } from '@/composables/useAntVChart'
 
 const store = useAnalyticsStore()
 const report = computed(() => store.qualityReport)
 
+const tierPieSpec = computed<ChartSpec | null>(() => {
+  const r = report.value
+  if (!r) return null
+  const tiers = r.quality_tiers
+  const entries = [
+    { category: 'Reference',     value: tiers.reference },
+    { category: 'Excellent',     value: tiers.excellent },
+    { category: 'Great',         value: tiers.great },
+    { category: 'Good',          value: tiers.good },
+    { category: 'Acceptable',    value: tiers.acceptable },
+    { category: 'Needs upgrade', value: tiers.needs_upgrade },
+  ].filter((e) => e.value > 0)
+  if (!entries.length) return null
+  return {
+    type: 'pie',
+    theme: 'dark',
+    width: 600,
+    height: 440,
+    data: entries,
+    extra: { innerRadius: 0.62 },
+  }
+})
+
+const qualityRadarSpec = computed<ChartSpec | null>(() => {
+  const r = report.value
+  if (!r) return null
+  const q = r.quality_summary
+  return {
+    type: 'radar',
+    theme: 'dark',
+    width: 500,
+    height: 440,
+    data: [
+      { name: 'Dolby Vision', value: q.dv_percentage },
+      { name: 'FEL (P7)',     value: q.fel_percentage },
+      { name: 'Atmos',        value: q.atmos_percentage },
+      { name: '4K',           value: q.fourk_percentage },
+    ],
+  }
+})
+
 const healthScoreColor = computed(() => {
   const score = report.value?.health_score || 0
   if (score >= 80) return '#10b981'
-  if (score >= 60) return '#818cf8'
+  if (score >= 60) return '#4d7cff'
   if (score >= 40) return '#f59e0b'
-  return '#f87171'
+  return '#d45473'
 })
+
+function pctRaw(count: number, total: number): number {
+  return (count / (total || 1)) * 100
+}
+function pctLabel(count: number, total: number): string {
+  if (count === 0) return '0'
+  const raw = pctRaw(count, total)
+  if (raw < 1) return '<1'
+  if (raw < 10) return raw.toFixed(1)
+  return String(Math.round(raw))
+}
+function pctBarWidth(count: number, total: number): number {
+  const raw = pctRaw(count, total)
+  if (raw === 0) return 0
+  return Math.max(1.2, raw) // visible minimum so tiny-but-nonzero tiers still draw a sliver
+}
 
 const qualityTierData = computed(() => {
   if (!report.value) return []
   const tiers = report.value.quality_tiers
   const total = report.value.total_movies || 1
 
-  return [
-    { key: 'reference', label: 'Reference', count: tiers.reference, percentage: Math.round((tiers.reference / total) * 100), color: '#818cf8', description: 'P7 FEL + Atmos + 4K' },
-    { key: 'excellent', label: 'Excellent', count: tiers.excellent, percentage: Math.round((tiers.excellent / total) * 100), color: '#10b981', description: 'Dolby Vision + Atmos + 4K' },
-    { key: 'great', label: 'Great', count: tiers.great, percentage: Math.round((tiers.great / total) * 100), color: '#7c3aed', description: 'DV + 4K or FEL' },
-    { key: 'good', label: 'Good', count: tiers.good, percentage: Math.round((tiers.good / total) * 100), color: '#3b82f6', description: '4K HDR or DV 1080p' },
-    { key: 'acceptable', label: 'Acceptable', count: tiers.acceptable, percentage: Math.round((tiers.acceptable / total) * 100), color: '#f59e0b', description: '4K SDR or 1080p HDR' },
-    { key: 'needs_upgrade', label: 'Needs Upgrade', count: tiers.needs_upgrade, percentage: Math.round((tiers.needs_upgrade / total) * 100), color: '#f87171', description: '1080p SDR or lower' },
+  const rows = [
+    { key: 'reference',     label: 'Reference',     count: tiers.reference,     color: '#4d7cff', description: 'P7 FEL + Atmos + 4K' },
+    { key: 'excellent',     label: 'Excellent',     count: tiers.excellent,     color: '#10b981', description: 'Dolby Vision + Atmos + 4K' },
+    { key: 'great',         label: 'Great',         count: tiers.great,         color: '#4d7cff', description: 'DV + 4K or FEL' },
+    { key: 'good',          label: 'Good',          count: tiers.good,          color: '#3b82f6', description: '4K HDR or DV 1080p' },
+    { key: 'acceptable',    label: 'Acceptable',    count: tiers.acceptable,    color: '#f59e0b', description: '4K SDR or 1080p HDR' },
+    { key: 'needs_upgrade', label: 'Needs Upgrade', count: tiers.needs_upgrade, color: '#d45473', description: '1080p SDR or lower' },
   ]
+  return rows.map((r) => ({
+    ...r,
+    percentage: pctLabel(r.count, total),
+    barWidth:   pctBarWidth(r.count, total),
+  }))
 })
 
 function profileBadgeClass(profile: string) {
@@ -199,12 +281,12 @@ onMounted(() => {
   width: 48px;
   height: 48px;
   border-radius: 12px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(99, 102, 241, 0.2));
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: linear-gradient(135deg, rgba(77, 124, 255, 0.2), rgba(77, 124, 255, 0.2));
+  border: 1px solid rgba(77, 124, 255, 0.3);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #818cf8;
+  color: #4d7cff;
   flex-shrink: 0;
 }
 

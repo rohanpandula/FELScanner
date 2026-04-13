@@ -71,15 +71,13 @@ async def trigger_scan():
 
 
 async def _stream_scan_logs() -> AsyncGenerator[bytes, None]:
-    """Stream SSE events from IPT scraper"""
-    settings = get_settings()
-    scraper_url = f"{settings.IPT_SCRAPER_URL}/api/scan/stream"
+    """Stream SSE events from the in-process scraper."""
+    import json as _json
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        async with client.stream("GET", scraper_url) as response:
-            # Stream raw bytes to preserve SSE format
-            async for chunk in response.aiter_bytes():
-                yield chunk
+    from app.services.ipt_scraper import get_scraper
+
+    async for event in get_scraper().scan_stream():
+        yield f"data: {_json.dumps(event)}\n\n".encode("utf-8")
 
 
 @router.get("/scan/stream")

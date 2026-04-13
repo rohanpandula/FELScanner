@@ -1,29 +1,30 @@
 <template>
-  <div id="app" class="min-h-screen relative" style="padding-top: 2px;">
+  <div id="app" class="min-h-screen relative">
+    <!-- Top gold filament -->
+    <div class="filament" aria-hidden="true"></div>
+
     <!-- Header -->
-    <header class="sticky top-0 z-50" style="background: rgba(11, 15, 25, 0.8); backdrop-filter: blur(16px); border-bottom: 1px solid rgba(55, 65, 81, 0.5);">
+    <header class="header">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex justify-between items-center py-4">
           <!-- Logo & Status -->
-          <div class="flex items-center space-x-5">
-            <div class="flex items-center space-x-3">
-              <div class="w-8 h-8 rounded-lg flex items-center justify-center" style="background: linear-gradient(135deg, #6366f1, #8b5cf6);">
-                <svg class="w-[18px] h-[18px] text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
+          <div class="flex items-center space-x-6">
+            <router-link to="/" class="flex items-center space-x-3 group">
+              <div class="logo-mark">
+                <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M4 12h10M4 17h16" />
                 </svg>
               </div>
-              <div>
-                <h1 class="text-lg font-bold text-white" style="letter-spacing: -0.01em;">FELScanner</h1>
+              <div class="leading-none">
+                <div class="wordmark">FELScanner</div>
+                <div class="wordmark-sub">dv · truehd · p7 fel</div>
               </div>
-            </div>
+            </router-link>
 
             <!-- Status Indicator -->
-            <div v-if="appStore.scanStatus" class="flex items-center space-x-2 px-3 py-1.5 rounded-full" style="background: rgba(31, 41, 55, 0.5); border: 1px solid rgba(55, 65, 81, 0.5);">
-              <span
-                class="h-2 w-2 rounded-full"
-                :class="statusIndicatorClass"
-              ></span>
-              <span class="text-xs font-medium" style="color: #9ca3af;">{{ appStore.scanStatus.state }}</span>
+            <div v-if="appStore.scanStatus" class="status-pill">
+              <span class="status-dot" :class="statusIndicatorClass"></span>
+              <span class="status-text">{{ appStore.scanStatus.state }}</span>
             </div>
           </div>
 
@@ -50,6 +51,7 @@
             <router-link to="/ipt" class="nav-link" active-class="nav-link-active">
               IPT
             </router-link>
+
 
             <!-- More dropdown -->
             <div class="relative" @mouseenter="showMoreMenu = true" @mouseleave="showMoreMenu = false">
@@ -120,13 +122,13 @@ const showMoreMenu = ref(false)
 const statusIndicatorClass = computed(() => {
   const state = appStore.scanStatus?.state
   if (state === 'scanning' || state === 'verifying') {
-    return 'bg-[#818cf8]'
+    return 'status-scanning'
   } else if (state === 'idle') {
-    return 'bg-[#10b981]'
+    return 'status-idle'
   } else if (state === 'error') {
-    return 'bg-[#ef4444]'
+    return 'status-error'
   }
-  return 'bg-[#6b7280]'
+  return 'status-unknown'
 })
 
 const flashMessageClass = (type: string) => {
@@ -159,23 +161,94 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* Navigation Links */
-.nav-link {
-  padding: 0.5rem 0.875rem;
-  font-size: 0.875rem;
+/* Subtle accent top line */
+.filament {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(77, 124, 255, 0.2) 40%,
+    rgba(77, 124, 255, 0.5) 50%,
+    rgba(77, 124, 255, 0.2) 60%,
+    transparent 100%
+  );
+  z-index: 100;
+  pointer-events: none;
+}
+
+/* Header */
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: rgba(12, 12, 14, 0.75);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Logo — flat square mark, no gradient coin */
+.logo-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: #4d7cff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.group:hover .logo-mark {
+  transform: scale(1.04);
+}
+
+/* Wordmark — sans, tight tracking, weight-only hierarchy */
+.wordmark {
+  font-family: 'Geist', ui-sans-serif, sans-serif;
+  font-weight: 600;
+  font-size: 0.95rem;
+  letter-spacing: -0.025em;
+  color: #f4f4f5;
+  line-height: 1;
+}
+
+.wordmark-sub {
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.62rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: #71717a;
+  margin-top: 3px;
+  text-transform: none;
+}
+
+/* Status pill */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.status-pill .status-text {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 0.68rem;
   font-weight: 500;
-  color: #9ca3af;
-  border-radius: 8px;
-  transition: color 0.2s;
-}
-
-.nav-link:hover {
-  color: white;
-}
-
-.nav-link-active {
-  color: white;
-  background: rgba(99, 102, 241, 0.15);
+  letter-spacing: 0;
+  color: #a1a1aa;
+  text-transform: none;
 }
 
 /* More Dropdown */
@@ -184,67 +257,59 @@ onUnmounted(() => {
   top: 100%;
   right: 0;
   margin-top: 0.5rem;
-  min-width: 180px;
-  background: var(--gray-950);
-  border: 1px solid rgba(55, 65, 81, 0.6);
+  min-width: 200px;
+  background: rgba(12, 12, 14, 0.96);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
-  padding: 0.375rem;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 0.35rem;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 12px 40px rgba(0, 0, 0, 0.6);
   z-index: 50;
 }
 
 .dropdown-link {
   display: block;
-  padding: 0.5rem 0.875rem;
-  font-size: 0.8rem;
+  padding: 0.5rem 0.75rem;
+  font-family: 'Geist', ui-sans-serif, sans-serif;
+  font-size: 0.82rem;
   font-weight: 500;
-  color: #9ca3af;
-  border-radius: 8px;
-  transition: all 0.2s;
+  letter-spacing: -0.005em;
+  color: #a1a1aa;
+  border-radius: 6px;
+  text-transform: none;
+  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .dropdown-link:hover {
-  color: white;
-  background: rgba(99, 102, 241, 0.1);
+  color: #f4f4f5;
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .dropdown-link-active {
-  color: white;
-  background: rgba(99, 102, 241, 0.15);
+  color: #4d7cff;
+  background: rgba(77, 124, 255, 0.1);
 }
 
-/* Flash Messages */
-.flash-message {
-  padding: 0.875rem 1rem;
-  border-radius: 10px;
-  border: 1px solid;
-  max-width: 400px;
-  font-family: 'Inter', sans-serif;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+/* Flash Transitions */
+.flash-enter-active {
+  transition: all 0.44s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.flash-success {
-  background: rgba(16, 185, 129, 0.1);
-  border-color: rgba(16, 185, 129, 0.3);
-  color: #34d399;
+.flash-leave-active {
+  transition: all 0.28s cubic-bezier(0.4, 0, 1, 1);
 }
 
-.flash-error {
-  background: rgba(239, 68, 68, 0.1);
-  border-color: rgba(239, 68, 68, 0.3);
-  color: #f87171;
+.flash-enter-from {
+  opacity: 0;
+  transform: translateX(80px) scale(0.92);
 }
 
-.flash-warning {
-  background: rgba(245, 158, 11, 0.1);
-  border-color: rgba(245, 158, 11, 0.3);
-  color: #fbbf24;
-}
-
-.flash-info {
-  background: rgba(59, 130, 246, 0.1);
-  border-color: rgba(59, 130, 246, 0.3);
-  color: #60a5fa;
+.flash-leave-to {
+  opacity: 0;
+  transform: translateX(-80px);
 }
 
 .flash-icon {
@@ -258,46 +323,27 @@ onUnmounted(() => {
   padding: 0.25rem;
   border-radius: 6px;
   color: currentColor;
-  opacity: 0.6;
+  opacity: 0.55;
   transition: all 0.2s;
 }
 
 .flash-close:hover {
   opacity: 1;
-  background: rgba(255, 255, 255, 0.1);
-}
-
-/* Flash Transitions */
-.flash-enter-active {
-  transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.flash-leave-active {
-  transition: all 0.3s cubic-bezier(0.4, 0, 1, 1);
-}
-
-.flash-enter-from {
-  opacity: 0;
-  transform: translateX(80px);
-}
-
-.flash-leave-to {
-  opacity: 0;
-  transform: translateX(-80px);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 /* Page Transitions */
 .page-enter-active {
-  transition: all 0.3s ease;
+  transition: all 0.36s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .page-leave-active {
-  transition: all 0.2s ease;
+  transition: all 0.22s ease;
 }
 
 .page-enter-from {
   opacity: 0;
-  transform: translateY(10px);
+  transform: translateY(14px);
 }
 
 .page-leave-to {

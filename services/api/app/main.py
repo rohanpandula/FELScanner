@@ -42,6 +42,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # Initialize database
     await init_db()
 
+    # Seed the settings table from env on a fresh DB so the UI has sane
+    # defaults instead of an empty Settings screen.
+    try:
+        from app.core.database import get_session_factory
+        from app.core.settings_seed import seed_settings_if_empty
+        from app.services.scan_service import ScanService
+
+        async with get_session_factory()() as _seed_db:
+            inserted = await seed_settings_if_empty(_seed_db, settings)
+            if inserted:
+                logger.info("settings.seed_complete", inserted=inserted)
+            # Mark any `running` scans from a crashed/restarted previous
+            # container instance as failed so the UI doesn't think a scan is
+            # still live.
+            reconciled = await ScanService.reconcile_orphaned_scans(_seed_db)
+            if reconciled:
+                logger.info("scan.reconciled_orphans", count=reconciled)
+    except Exception as _exc:  # noqa: BLE001
+        logger.warning("settings.seed_failed", error=str(_exc))
+
     # Start background task scheduler
     from app.tasks.scheduler import TaskScheduler
     app.state.scheduler = TaskScheduler()

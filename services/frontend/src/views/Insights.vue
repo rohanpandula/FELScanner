@@ -109,15 +109,15 @@
               <tbody>
                 <tr v-for="(ver, vi) in dup.versions" :key="vi" class="border-b" style="border-color: rgba(107, 107, 127, 0.08);">
                   <td class="mini-cell">
-                    <span class="text-xs font-medium" style="color: #a78bfa;">{{ ver.quality || '-' }}</span>
+                    <span class="text-xs font-medium" style="color: #9bb4ff;">{{ ver.quality || '-' }}</span>
                   </td>
                   <td class="mini-cell text-center text-xs" style="color: #9ca3af;">{{ ver.resolution || '-' }}</td>
                   <td class="mini-cell text-center">
-                    <span v-if="ver.dv_profile" class="text-xs font-bold" style="color: #7c3aed;">{{ ver.dv_profile }}</span>
+                    <span v-if="ver.dv_profile" class="text-xs font-bold" style="color: #4d7cff;">{{ ver.dv_profile }}</span>
                     <span v-else class="text-xs" style="color: #9ca3af;">-</span>
                   </td>
                   <td class="mini-cell text-center">
-                    <span v-if="ver.dv_fel" class="text-xs font-bold" style="color: #818cf8;">Yes</span>
+                    <span v-if="ver.dv_fel" class="text-xs font-bold" style="color: #4d7cff;">Yes</span>
                     <span v-else class="text-xs" style="color: #9ca3af;">-</span>
                   </td>
                   <td class="mini-cell text-center">
@@ -142,7 +142,7 @@
 
     <!-- Loading -->
     <div v-if="store.loading" class="text-center py-20">
-      <div class="inline-block w-10 h-10 border-2 border-[#818cf8] border-t-transparent rounded-full animate-spin"></div>
+      <div class="inline-block w-10 h-10 border-2 border-[#4d7cff] border-t-transparent rounded-full animate-spin"></div>
     </div>
   </div>
 </template>
@@ -199,10 +199,10 @@ onMounted(() => {
 
 .section-icon {
   width: 48px; height: 48px; border-radius: 12px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(99, 102, 241, 0.2));
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: linear-gradient(135deg, rgba(77, 124, 255, 0.2), rgba(77, 124, 255, 0.2));
+  border: 1px solid rgba(77, 124, 255, 0.3);
   display: flex; align-items: center; justify-content: center;
-  color: #818cf8; flex-shrink: 0;
+  color: #4d7cff; flex-shrink: 0;
 }
 
 .tab-btn {
@@ -215,29 +215,29 @@ onMounted(() => {
 }
 .tab-btn:hover { color: #f5f5f7; background: rgba(31, 41, 55, 0.5); }
 .tab-btn.active {
-  color: #818cf8;
-  background: rgba(99, 102, 241, 0.15);
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  color: #4d7cff;
+  background: rgba(77, 124, 255, 0.15);
+  border: 1px solid rgba(77, 124, 255, 0.3);
 }
 .tab-count {
   font-size: 0.65rem; padding: 0.125rem 0.375rem;
   border-radius: 999px; background: rgba(107, 107, 127, 0.2);
 }
 .tab-btn.active .tab-count {
-  background: rgba(99, 102, 241, 0.3);
-  color: #818cf8;
+  background: rgba(77, 124, 255, 0.3);
+  color: #4d7cff;
 }
 
 .upgrade-card { cursor: default; }
-.upgrade-card:hover { border-color: rgba(99, 102, 241, 0.3); }
+.upgrade-card:hover { border-color: rgba(77, 124, 255, 0.3); }
 
 .upgrade-tag {
   font-size: 0.65rem; font-weight: 700;
   text-transform: uppercase; letter-spacing: 0.05em;
   padding: 0.25rem 0.5rem; border-radius: 6px;
 }
-.tag-fel { background: rgba(99, 102, 241, 0.15); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.3); }
-.tag-dv { background: rgba(124, 58, 237, 0.15); color: #a78bfa; border: 1px solid rgba(124, 58, 237, 0.3); }
+.tag-fel { background: rgba(77, 124, 255, 0.15); color: #4d7cff; border: 1px solid rgba(77, 124, 255, 0.3); }
+.tag-dv { background: rgba(77, 124, 255, 0.15); color: #9bb4ff; border: 1px solid rgba(77, 124, 255, 0.3); }
 .tag-atmos { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
 .tag-4k { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
 

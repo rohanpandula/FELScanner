@@ -30,26 +30,46 @@ class ScanService:
     5. Track scan history
     """
 
-    def __init__(self, db: AsyncSession):
-        """
-        Initialize scan service
+    # Process-wide lock so concurrent HTTP calls can't start parallel scans
+    # hammering the same Plex library.
+    _scan_lock: asyncio.Lock = asyncio.Lock()
+    _current_scan: ScanHistory | None = None
 
-        Args:
-            db: Database session
-        """
+    def __init__(self, db: AsyncSession):
         self.db = db
         self.scanner = PlexScanner()
         self.collection_manager = CollectionManager()
-        self._scan_lock = asyncio.Lock()
-        self._current_scan: ScanHistory | None = None
 
     async def is_scan_running(self) -> bool:
         """Check if a scan is currently running"""
-        return self._scan_lock.locked()
+        return type(self)._scan_lock.locked()
 
     async def get_current_scan(self) -> ScanHistory | None:
         """Get current scan record if one is running"""
-        return self._current_scan
+        return type(self)._current_scan
+
+    @classmethod
+    async def reconcile_orphaned_scans(cls, db: AsyncSession) -> int:
+        """
+        Mark any `running` scan_history rows as failed. Run on app startup —
+        those rows are ghost scans from previous container instances that died
+        mid-scan. Returns the number of rows fixed.
+        """
+        result = await db.execute(
+            update(ScanHistory)
+            .where(ScanHistory.status == "running")
+            .values(
+                status="failed",
+                error_message="Container restarted during scan",
+                completed_at=datetime.utcnow(),
+            )
+            .returning(ScanHistory.id)
+        )
+        ids = [row[0] for row in result.all()]
+        if ids:
+            await db.commit()
+            logger.info("scan.orphaned_reconciled", count=len(ids), ids=ids)
+        return len(ids)
 
     async def trigger_full_scan(
         self,
@@ -71,10 +91,10 @@ class ScanService:
         Raises:
             RuntimeError: If a scan is already running
         """
-        if self._scan_lock.locked():
+        if type(self)._scan_lock.locked():
             raise RuntimeError("A scan is already in progress")
 
-        async with self._scan_lock:
+        async with type(self)._scan_lock:
             # Create scan history record
             scan_record = ScanHistory(
                 scan_type="full",
@@ -86,7 +106,7 @@ class ScanService:
             await self.db.commit()
             await self.db.refresh(scan_record)
 
-            self._current_scan = scan_record
+            type(self)._current_scan = scan_record
 
             logger.info(
                 "scan.started",
@@ -118,8 +138,10 @@ class ScanService:
                 if on_progress:
                     on_progress("Updating Plex collections...", 0, 0, None)
 
-                # Update collections
-                collection_stats = await self._update_collections(scanned_movies)
+                # Update collections (streams per-50-movies progress events)
+                collection_stats = await self._update_collections(
+                    scanned_movies, on_progress=on_progress
+                )
 
                 # Update scan record with results
                 scan_record.status = "completed"
@@ -166,7 +188,7 @@ class ScanService:
                 raise
 
             finally:
-                self._current_scan = None
+                type(self)._current_scan = None
                 await self.scanner.close()
 
     async def _update_database(
@@ -270,24 +292,16 @@ class ScanService:
         return stats
 
     async def _update_collections(
-        self, scanned_movies: list[dict[str, Any]]
+        self, scanned_movies: list[dict[str, Any]], on_progress=None
     ) -> dict[str, int]:
         """
         Update Plex collections for all movies.
 
         Collection flags are already set in _update_database, so this method
         only needs to verify the actual Plex collections match the DB state.
-
-        Args:
-            scanned_movies: List of scanned movie metadata
-
-        Returns:
-            dict: Collection update statistics
         """
-        # Collection flags already set in _update_database —
-        # just pass movie data to collection manager for Plex-side verification
         collection_stats = await self.collection_manager.verify_collections(
-            scanned_movies
+            scanned_movies, on_progress=on_progress
         )
 
         logger.info("scan.collections_updated", stats=collection_stats)
