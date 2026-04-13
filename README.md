@@ -1,20 +1,39 @@
 # FELScanner
 
-Dolby Vision intelligence layer for Plex. Scans your library for DV profiles, FEL layers, TrueHD Atmos, and HDR formats — then tells you what to upgrade, what's duplicated, and where your disk is going.
+> Dolby Vision intelligence layer for Plex. Detects DV profiles, FEL layers, TrueHD Atmos, and HDR formats across your library, then tells you what to upgrade, what's duplicated, and where your disk is going.
 
 Built for collectors who care about the difference between Profile 5 and Profile 7.
 
-## What it does
+---
 
-- **Library scanning** — Full-library scan against Plex identifies every movie's video profile (DV P5/P7/P8, HDR10, SDR), audio format (TrueHD Atmos, DTS-HD MA, AC3), resolution, codec, and HDR metadata.
-- **Storage analytics** — Treemap by DV status, donut by resolution, top-10 largest files, breakdowns by audio + codec. "Unknown" rows pruned, sorted by bytes descending.
-- **Quality report** — Health score out of 100, tier pie (Reference → Excellent → Good → Needs-Upgrade), radar across DV / FEL / Atmos / 4K coverage.
-- **Upgrade detection** — Scrapes IPTorrents for P7 FEL releases, cross-matches titles against your Plex library and Radarr catalogue, flags candidates.
-- **One-click approval** — Telegram inline buttons or web UI; approved downloads get sent straight to qBittorrent and Radarr.
-- **Duplicate detection** — Find movies with multiple versions (e.g., 1080p + 4K of the same film) and compare side-by-side.
-- **Release-group intelligence** — Track which groups produce the best encodes. Prefer/block individual groups.
-- **Activity timeline** — Every scan, download, and library change, chronologically.
-- **ffprobe explorer** — Drill into any movie's streams, containers, side-data — subtitle tracks, HDR10+ metadata, frame rate, bit depth.
+## Table of Contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [Development](#development)
+- [Testing](#testing)
+- [Project Structure](#project-structure)
+- [Security](#security)
+- [License](#license)
+
+---
+
+## Features
+
+- **Library scanning.** Walks your entire Plex library and identifies every movie's video profile (DV P5/P7/P8, HDR10, SDR), audio format (TrueHD Atmos, DTS-HD MA, AC3), resolution, codec, and HDR metadata.
+- **Storage analytics.** AntV-rendered treemap by DV status, donut by resolution, top-10 largest files, plus breakdowns by audio and codec.
+- **Quality report.** Health score out of 100, tier pie (Reference → Excellent → Good → Needs-Upgrade), radar across DV / FEL / Atmos / 4K coverage.
+- **Upgrade detection.** Scrapes IPTorrents for P7 FEL releases, matches titles against your Plex library and Radarr catalogue, flags candidates.
+- **One-click approval.** Telegram inline buttons or web UI; approved downloads go straight to qBittorrent and Radarr.
+- **Duplicate detection.** Finds movies with multiple versions and lets you compare them side-by-side.
+- **Release-group intelligence.** Tracks encode quality per group; prefer or block groups.
+- **Activity timeline.** Every scan, download, and library change chronologically.
+- **ffprobe explorer.** Deep dive into streams, containers, and side-data for any title.
+- **Live scan log.** Server-sent events stream progress from Plex discovery through collection updates.
 
 ## Architecture
 
@@ -35,101 +54,84 @@ Storage (Postgres 15 + Redis 7 in one image via tini + su-exec)
     '--> AntV GPT-Vis   (server-rendered storytelling charts)
 ```
 
-**Three containers:** `api`, `frontend`, `storage`. FlareSolverr runs externally — point `FLARESOLVERR_URL` at any existing instance on your network.
+**Three containers:** `api`, `frontend`, `storage`. FlareSolverr is treated as an external dependency — point `FLARESOLVERR_URL` at any existing instance on your network.
 
-## Quick start
+## Prerequisites
 
-### Prerequisites
-
-- Docker + Docker Compose
+- Docker 24+ and Docker Compose v2
 - Plex Media Server with a movie library
-- qBittorrent (optional — for auto-downloads)
-- Radarr (optional — for auto-add)
-- IPTorrents account (optional — for upgrade detection)
-- FlareSolverr reachable from the api container (Cloudflare bypass)
+- qBittorrent *(optional — for auto-downloads)*
+- Radarr *(optional — for auto-add)*
+- IPTorrents account *(optional — for upgrade detection)*
+- FlareSolverr reachable from the api container *(required only if using IPTorrents)*
 
-### Setup
+## Installation
 
 ```bash
 git clone https://github.com/rohanpandula/fel-syncer.git felscanner
 cd felscanner
 
 cp .env.example .env
-# Edit .env — fill in PLEX_URL, PLEX_TOKEN, LIBRARY_NAME at minimum.
+# Edit .env — at minimum set PLEX_URL, PLEX_TOKEN, LIBRARY_NAME.
 
 cd docker
 docker compose up -d
 ```
 
-The UI is available at `http://<your-host>:5173` (or whatever you set `FRONTEND_PORT` to). It proxies all `/api/*` traffic to the backend over the internal bridge network.
+The UI is served on `http://<your-host>:5173` by default. Adjust `FRONTEND_PORT` in `.env` to change.
 
-### Configuration
+## Configuration
 
-All runtime config is via `.env`. The app also seeds a settings row in the database on first boot (from your env vars) so the Settings UI isn't blank.
+All runtime config lives in `.env`. On first boot the app seeds a `settings` row in Postgres from your env vars so the in-app Settings screen isn't blank.
 
-Minimum env vars to run:
+### Required
 
 | Variable | Description |
 |----------|-------------|
 | `PLEX_URL` | Plex server URL (e.g. `http://plex.lan:32400`) |
-| `PLEX_TOKEN` | Plex auth token ([how to find it](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)) |
+| `PLEX_TOKEN` | Plex auth token ([find yours](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)) |
 | `LIBRARY_NAME` | Plex movies library name (default `Movies`) |
 
-Optional (adds features):
+### Optional feature toggles
 
-| Variable | Description |
-|----------|-------------|
+| Variable | Enables |
+|----------|---------|
 | `TELEGRAM_TOKEN` + `TELEGRAM_CHAT_ID` | Push notifications + inline approvals |
 | `RADARR_URL` + `RADARR_API_KEY` | Movie path resolution, auto-add missing titles |
 | `QBITTORRENT_HOST` + `QBITTORRENT_USERNAME` + `QBITTORRENT_PASSWORD` | Download dispatch |
-| `IPT_UID` + `IPT_PASS` + `IPT_CF_CLEARANCE` | IPTorrents credentials (cookies) |
+| `IPT_UID` + `IPT_PASS` + `IPT_CF_CLEARANCE` | IPTorrents credentials (session cookies) |
 | `FLARESOLVERR_URL` | Cloudflare bypass URL (e.g. `http://flaresolverr:8191`) |
+| `SCAN_FREQUENCY_HOURS` | Override the scheduled full-scan interval |
 
 See `.env.example` for every variable with descriptions.
 
-### Running alongside other Plex-adjacent containers (Unraid macvlan)
+### Running alongside Plex on Unraid macvlan
 
-If Plex / Radarr / qBittorrent live on a custom Docker network with their own LAN IPs (common on Unraid with `br0` macvlan), the default bridge network can't reach them through the host. In that case, uncomment the `br0:` block in `docker/docker-compose.yml` under the `api` service and set `API_BR0_IP` in `.env` to a free IP on that LAN. The api container dual-homes to both the internal bridge (for Postgres/Redis) and your LAN bridge (for Plex). Details are in the inline comments in the compose file.
+If Plex, Radarr, and qBittorrent live on a custom Docker network with their own LAN IPs (common on Unraid with `br0` macvlan), the default bridge network can't reach them through the host. Uncomment the `br0:` block in `docker/docker-compose.yml` under the `api` service and set `API_BR0_IP` in `.env` to a free IP on that LAN. The api container dual-homes to both the internal bridge (for Postgres/Redis) and your LAN bridge (for Plex). Inline comments in the compose file walk through the specifics.
 
-## Tech stack
+## Usage
 
-- **Backend:** Python 3.11, FastAPI, SQLAlchemy (async), APScheduler, httpx
-- **Frontend:** Vue 3, TypeScript, Vite, Pinia, Tailwind CSS, Geist font, AntV GPT-Vis charts
-- **Storage:** Postgres 15 + Redis 7 bundled into one image (tini supervisor)
-- **IPT scraper:** Python port using httpx + BeautifulSoup, relies on an external FlareSolverr
-- **Infrastructure:** Docker Compose
+Once the stack is running:
 
-## Development
+1. Open `http://<your-host>:5173`
+2. Click **Start Scan** on the Dashboard to trigger a library walk. The scan log streams live progress.
+3. Explore:
+   - `/storage` — where your disk is going
+   - `/quality` — library health score + tier breakdown
+   - `/insights` — duplicates and upgrade opportunities
+   - `/downloads` — pending approvals + active transfers
+   - `/ipt` — IPTorrents results matched against your library
 
-```bash
-# Backend
-cd services/api
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-pytest                  # run tests
+Scheduled scans run automatically on the interval set by `SCAN_FREQUENCY_HOURS` (default 24).
 
-# Frontend
-cd services/frontend
-npm install
-npm run dev             # Vite dev server with HMR at :5173
-npm run build           # production build
-npm run test:unit       # Vitest
+### Pages
 
-# Full stack
-cd docker
-docker compose up -d
-docker compose logs -f api
-```
-
-## Pages
-
-| Page | Path | What it shows |
-|------|------|---------------|
-| Dashboard | `/` | Library stats, scan controls, scan log stream, pending approvals |
+| Page | Path | Contents |
+|------|------|----------|
+| Dashboard | `/` | Library stats, scan controls, live log, pending approvals |
 | Quality Report | `/quality` | Health score, tier donut, DV/FEL/Atmos/4K radar |
 | Insights | `/insights` | Upgrade opportunities, duplicate groups |
-| Storage | `/storage` | Treemap by DV status, pie by resolution, top-10 largest files |
+| Storage | `/storage` | Treemap by DV status, donut by resolution, top-10 files |
 | Metadata Explorer | `/metadata` | ffprobe drill-down per movie |
 | Downloads | `/downloads` | Pending approvals, active transfers, audit trail |
 | IPT Scanner | `/ipt` | IPTorrents results enriched with library match info |
@@ -137,18 +139,120 @@ docker compose logs -f api
 | Activity Feed | `/activity` | Timeline of scans, downloads, library changes |
 | Settings | `/settings` | Connection health, notification rules, collections, scan schedule |
 
-## Design
+## Development
 
-The UI follows a single-accent (electric blue `#4d7cff`) dark theme on a zinc-950 base, Geist sans + Geist Mono typography, flat weight-based hierarchy. No AI purple gradients, no generic three-column card rows, no gradient text on headers.
+Run each service outside Docker for fast iteration.
 
-Data storytelling uses AntV GPT-Vis charts (treemap, donut, radar, sankey) served through a proxy endpoint so the browser doesn't hit CORS.
+### Backend (FastAPI)
+
+```bash
+cd services/api
+python -m venv .venv
+source .venv/bin/activate       # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Requires a reachable Postgres + Redis. Either point at the Dockerized `storage` container or export `DATABASE_URL` / `REDIS_URL` for a local install.
+
+### Frontend (Vue 3)
+
+```bash
+cd services/frontend
+npm install
+npm run dev                     # Vite HMR at :5173
+npm run build                   # production build
+npm run build:check             # build with TypeScript strict check
+```
+
+### Full stack (dev compose)
+
+```bash
+cd docker
+docker compose -f docker-compose.dev.yml up -d
+docker compose logs -f api
+```
+
+### Common commands
+
+```bash
+# Type-check and lint backend
+cd services/api
+mypy app/
+flake8 app/ tests/
+black app/ tests/
+isort app/ tests/
+
+# Frontend
+cd services/frontend
+npm run lint
+npm run format
+```
+
+## Testing
+
+### Backend (pytest)
+
+```bash
+cd services/api
+pytest                              # all tests
+pytest --cov=app --cov-report=html  # with coverage
+pytest -m unit                      # unit tests only
+pytest -m integration               # integration tests only
+pytest tests/unit/test_torrent_parser.py   # single file
+```
+
+Test fixtures live in `tests/conftest.py`. Integration tests require a running Postgres; point `DATABASE_URL` at a test database or use the Docker stack.
+
+### Frontend
+
+```bash
+cd services/frontend
+npm run test:unit       # Vitest unit tests
+npm run test:e2e        # Playwright end-to-end
+```
+
+## Project Structure
+
+```
+felscanner/
+├── docker/
+│   ├── docker-compose.yml          # Prod stack (3 containers)
+│   ├── docker-compose.dev.yml      # Dev overrides
+│   └── storage/
+│       ├── Dockerfile              # Postgres 15 + Redis 7 combined image
+│       └── run.sh                  # Runtime supervisor
+├── database/
+│   └── init.sql                    # Initial schema
+├── services/
+│   ├── api/                        # FastAPI backend (Python 3.11)
+│   │   ├── app/
+│   │   │   ├── api/v1/             # REST endpoints
+│   │   │   ├── core/               # Config, DB, logging, seed
+│   │   │   ├── integrations/       # Plex, qBittorrent, Radarr, Telegram
+│   │   │   ├── models/             # SQLAlchemy ORM
+│   │   │   ├── services/           # Business logic + in-process IPT scraper
+│   │   │   └── tasks/              # APScheduler periodic jobs
+│   │   └── tests/                  # pytest unit + integration
+│   └── frontend/                   # Vue 3 + Vite
+│       └── src/
+│           ├── api/                # Axios clients
+│           ├── components/         # Reusable components + AntVChart
+│           ├── composables/        # Including useAntVChart
+│           ├── stores/             # Pinia state
+│           └── views/              # Top-level pages
+├── scripts/                        # Utility scripts (migration, etc.)
+└── README.md
+```
 
 ## Security
 
-- Every secret comes from `.env` (gitignored) or env vars at runtime. No hardcoded tokens anywhere in the repo.
-- Plex / Telegram / qBittorrent / Radarr credentials are only read at runtime and stored to the Postgres `settings` table on first boot for the UI to read.
-- The api container opens only `/health` publicly — everything else requires the internal bridge network or the frontend nginx proxy.
+- Secrets are read from `.env` (gitignored) or env vars at runtime. No hardcoded tokens anywhere in the repo.
+- GitHub secret-scanning push protection is enabled on the remote.
+- Plex / Telegram / qBittorrent / Radarr credentials are stored only in the Postgres `settings` table (seeded from env on first boot) for the UI to read back.
+- The api container exposes only `/health` publicly; every other endpoint requires the internal bridge network or the frontend nginx proxy.
 
 ## License
 
-MIT
+MIT.
